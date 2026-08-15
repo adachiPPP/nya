@@ -1,14 +1,19 @@
 # nya
 
-A package manager written from scratch in C. nya reads and writes the same
+a package manager written from scratch in C. nya reads and writes the same
 databases, package format, and cache as pacman, so packages installed with nya
-can be removed or upgraded with pacman and vice versa. It does **not** wrap or
+can be removed or upgraded with pacman and vice versa. it does **not** wrap or
 call pacman — every operation (database parsing, dependency resolution,
 download, extraction, scriptlets, hooks, removal) is implemented natively.
 
+## Info
+the package manager can automatically find packages from flatpak aur and pacman
+the priority = **pacman** -> **aur** -> **flatpak**
+*Note: you can search nix packages but the whole purpose of nix is being configured from flakes so you can use nya to search for nix packages not to install them*
+
 ## Building
 
-Dependencies: `libcurl`, `zlib`, `libzstd`, `liblzma` (dev headers) and a C
+dependencies: `libcurl`, `zlib`, `libzstd`, `liblzma` (dev headers) and a C
 compiler.
 
 ```sh
@@ -18,21 +23,21 @@ sudo make install   # installs to /usr/local/bin/nya
 
 ## First use
 
-On the first run nya generates its config file automatically from
+on the first run nya generates its config file automatically from
 `/etc/pacman.conf` (repositories, mirrorlists, and options are imported):
 
 ```sh
 nya search firefox          # generates /etc/nya.conf from pacman.conf on first run
 ```
 
-You can re-import the repository layout at any time with:
+you can re-import the repository layout at any time with:
 
 ```sh
 sudo nya --read-paconfig            # read /etc/pacman.conf
 nya --read-paconfig /path/to/pacman.conf
 ```
 
-The generated config looks like pacman.conf, with nya-specific options
+the generated config looks like pacman.conf, with nya-specific options
 commented out until you enable them:
 
 ```ini
@@ -54,7 +59,7 @@ Include = /etc/pacman.d/mirrorlist
 Include = /etc/pacman.d/mirrorlist
 ```
 
-Config discovery order: `--config <path>`, `$NYA_CONF`, `./nya.conf`,
+config discovery order: `--config <path>`, `$NYA_CONF`, `./nya.conf`,
 `~/.config/nya/nya.conf`, `/etc/nya.conf`.
 
 ## Usage
@@ -85,30 +90,30 @@ sudo nya clean --all                # empty the cache (like -Scc)
 sudo nya -U ./myapp.pkg.tar.zst     # install a package file (like -U)
 ```
 
-Every sync operation is available both ways (`-S`, `-Ss`, `-Si`, `-Sy`, `-Su`,
+every sync operation is available both ways (`-S`, `-Ss`, `-Si`, `-Sy`, `-Su`,
 `-Syu`, `-Sw`, `-Sc`, `-Scc`, `-Q`, `-Qs`, `-Qi`, `-Ql`, `-Qk`, `-Qo`, `-Qm`,
 `-Qd`, `-Qe`, `-Qt`, `-Qu`, `-R`, `-Rs`, `-Rn`, `-Rc`, `-Ru`, `-U`).
 
-Common options: `--noconfirm`, `--needed`, `--asdeps`, `--overwrite`,
+common options: `--noconfirm`, `--needed`, `--asdeps`, `--overwrite`,
 `--root <dir>`, `--dbpath <path>`, `--cachedir <dir>`, `--ignore=pkg`,
 `--ignoregroup=grp`, `--config <path>`, `--color`/`--nocolor`, `--verbose`,
 `--quiet`.
 
 ## pacman compatibility
 
-- **Local database** (`/var/lib/pacman/local/<name>-<version>/`): writes
+- **local database** (`/var/lib/pacman/local/<name>-<version>/`): writes
   `desc`, `files`, `mtree`, and `install` in the exact pacman format
   (`%NAME%`, `%VERSION%`, `%INSTALLDATE%`, `%REASON%`, `%FILES%`, `%BACKUP%`,
   ...). pacman can remove, query, and check packages installed by nya.
-- **Sync databases** (`/var/lib/pacman/sync/<repo>.db`): gzip-compressed tar
+- **sync databases** (`/var/lib/pacman/sync/<repo>.db`): gzip-compressed tar
   archives with per-package `desc`/`files`/`depends`/`mtree`, downloaded and
   parsed natively. `.db` files compressed with zstd or xz are detected too.
-- **Package format**: `.pkg.tar.zst` (also `.pkg.tar.xz`/`.gz`/plain tar),
+- **package format**: `.pkg.tar.zst` (also `.pkg.tar.xz`/`.gz`/plain tar),
   including `.PKGINFO`, `.MTREE`, `.INSTALL`, symlinks, hardlinks, and
   ownership/perms.
-- **Shared cache**: by default nya downloads into `/var/cache/pacman/pkg`, so
+- **shared cache**: by default nya downloads into `/var/cache/pacman/pkg`, so
   both tools reuse the same downloaded packages.
-- **Lifecycle**: dependency resolution (including `provides` and soname deps),
+- **lifecycle**: dependency resolution (including `provides` and soname deps),
   conflict/replace handling, `pre_install`/`post_upgrade`/... scriptlets,
   `.pacnew` on install/upgrade and `.pacsave` on removal, `HoldPkg`,
   `IgnorePkg`/`IgnoreGroup`, `NoUpgrade`, pre/post transaction hooks from
@@ -131,9 +136,9 @@ sudo nya install <aur-only-name>   # falls back to AUR when not in repos
 AUR packages are built with `makepkg` (install `base-devel`) and the resulting
 `.pkg.tar.zst` is installed through nya itself.
 
-## Nix
+## ni(ck)x
 
-Enable with `nix = true` in `[options]`, then:
+enable with `nix = true` in `[options]`, then:
 
 ```sh
 nya nix search firefox
@@ -145,7 +150,7 @@ nya nix update
 manager) and prints matches with versions and descriptions. nix packages are
 installed with nix itself; nya provides the search.
 
-## Flatpak
+## flatpak
 
 ```sh
 nya -fp search vlc
@@ -155,7 +160,7 @@ nya -fp list
 nya -fp update
 ```
 
-These shell out to the `flatpak` CLI (requires flatpak installed).
+these shell out to the `flatpak` CLI (requires flatpak installed).
 
 ## Tests
 
