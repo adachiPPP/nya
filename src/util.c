@@ -426,6 +426,56 @@ int run_cmd(char *const argv[]) {
 	return -1;
 }
 
+static int run_capture_impl(char *const argv[], char **out, int quiet_err) {
+	int pipefd[2];
+	if (pipe(pipefd) != 0) return -1;
+	pid_t pid = fork();
+	if (pid < 0) return -1;
+	if (pid == 0) {
+		dup2(pipefd[1], STDOUT_FILENO);
+		if (quiet_err) {
+			int devnull = open("/dev/null", O_WRONLY);
+			if (devnull >= 0) {
+				dup2(devnull, STDERR_FILENO);
+				close(devnull);
+			}
+		}
+		close(pipefd[0]);
+		close(pipefd[1]);
+		execvp(argv[0], argv);
+		_exit(127);
+	}
+	close(pipefd[1]);
+	char *buf = xmalloc(65536);
+	long cap = 65536, n = 0;
+	for (;;) {
+		if (n + 1 >= cap) {
+			cap *= 2;
+			buf = xrealloc(buf, cap);
+		}
+		long got = read(pipefd[0], buf + n, cap - n - 1);
+		if (got <= 0) break;
+		n += got;
+	}
+	close(pipefd[0]);
+	int st;
+	while (waitpid(pid, &st, 0) < 0) {
+		if (errno != EINTR) break;
+	}
+	buf[n] = '\0';
+	*out = buf;
+	if (WIFEXITED(st)) return WEXITSTATUS(st);
+	return -1;
+}
+
+int run_capture(char *const argv[], char **out) {
+	return run_capture_impl(argv, out, 0);
+}
+
+int run_capture_quiet(char *const argv[], char **out) {
+	return run_capture_impl(argv, out, 1);
+}
+
 int run_sh(const char *cmd) {
 	return system(cmd);
 }

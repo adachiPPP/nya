@@ -5,41 +5,6 @@ static int nix_available(void) {
 	       access("/usr/local/bin/nix", X_OK) == 0;
 }
 
-static int run_capture(char *const argv[], char **out) {
-	int pipefd[2];
-	if (pipe(pipefd) != 0) return -1;
-	pid_t pid = fork();
-	if (pid < 0) return -1;
-	if (pid == 0) {
-		dup2(pipefd[1], STDOUT_FILENO);
-		close(pipefd[0]);
-		close(pipefd[1]);
-		execvp(argv[0], argv);
-		_exit(127);
-	}
-	close(pipefd[1]);
-	char *buf = xmalloc(65536);
-	long cap = 65536, n = 0;
-	for (;;) {
-		if (n + 1 >= cap) {
-			cap *= 2;
-			buf = xrealloc(buf, cap);
-		}
-		long got = read(pipefd[0], buf + n, cap - n - 1);
-		if (got <= 0) break;
-		n += got;
-	}
-	close(pipefd[0]);
-	int st;
-	while (waitpid(pid, &st, 0) < 0) {
-		if (errno != EINTR) break;
-	}
-	buf[n] = '\0';
-	*out = buf;
-	if (WIFEXITED(st)) return WEXITSTATUS(st);
-	return -1;
-}
-
 static int nix_enabled(config *c) {
 	if (!c->nix) {
 		error("nix support is disabled (set 'nix = true' in %s)", c->path);
@@ -144,6 +109,29 @@ int nix_info(config *c, const char *name) {
 		return -1;
 	}
 	return 0;
+}
+
+int nix_search_any(config *c, const char **terms, int n) {
+	(void)c;
+	if (!nix_available()) return 0;
+	char **argv = xcalloc(n + 4, sizeof *argv);
+	argv[0] = "nix";
+	argv[1] = "search";
+	argv[2] = "nixpkgs";
+	int i;
+	for (i = 0; i < n; i++) argv[i + 3] = (char *)terms[i];
+	argv[n + 3] = "--json";
+	argv[n + 4] = NULL;
+	char *out;
+	if (run_capture_quiet(argv, &out) != 0) {
+		free(argv);
+		free(out);
+		return 0;
+	}
+	free(argv);
+	int count = print_nix_results(out, 0);
+	free(out);
+	return count < 0 ? 0 : count;
 }
 
 int nix_update(config *c) {

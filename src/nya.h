@@ -86,6 +86,8 @@ void fmt_size(long long bytes, char *out, size_t n);
 char *now_iso8601(void);
 void rm_rf(const char *path);
 int run_cmd(char *const argv[]);
+int run_capture(char *const argv[], char **out);
+int run_capture_quiet(char *const argv[], char **out);
 int run_sh(const char *cmd);
 
 extern int g_noconfirm;
@@ -164,6 +166,7 @@ typedef struct config {
 	char *nyacache;
 	char *nixchannel;
 	char *aurbase;
+	char *sudobin;
 	strs cachedirs;
 	strs holdpkg;
 	strs ignorepkg;
@@ -175,6 +178,9 @@ typedef struct config {
 	int verbosepkglists;
 	int aur;
 	int nix;
+	int searchaur;
+	int searchnix;
+	int searchflatpak;
 	repo **repos;
 	int nrepos;
 } config;
@@ -333,6 +339,7 @@ int do_clean(config *c, int all);
 
 int aur_search(config *c, const char *term, int quiet);
 int aur_search_multi(config *c, const char **terms, int n);
+int aur_search_any(config *c, const char **terms, int n);
 int aur_info(config *c, const char *name);
 int aur_build_install(config *c, const char *name, txn *t);
 int aur_update(config *c, txn *t);
@@ -340,7 +347,10 @@ int aur_malware_check(config *c, const char *name);
 int nix_search(config *c, const char *term);
 int nix_info(config *c, const char *name);
 int nix_update(config *c);
+int nix_search_any(config *c, const char **terms, int n);
 int fp_run(int argc, char **argv);
+int fp_search(config *c, const char **terms, int n);
+int fp_update(config *c);
 
 typedef struct json {
 	int type;
