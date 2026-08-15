@@ -354,7 +354,11 @@ int refresh_dbs(config *c) {
 			msg("%s%s%s is up to date", col_green(), reps[i]->name, col_reset());
 		} else {
 			unlink(tmps[i]);
-			if (jobs[i].err[0]) error("failed to sync %s: %s", reps[i]->name, jobs[i].err);
+			if (jobs[i].err[0]) {
+				if (strstr(jobs[i].err, "Permission denied"))
+					error("failed to sync %s: %s (run as root, e.g. 'sudo nya update')", reps[i]->name, jobs[i].err);
+				else error("failed to sync %s: %s", reps[i]->name, jobs[i].err);
+			}
 			rc = -1;
 		}
 	}

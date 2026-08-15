@@ -25,10 +25,10 @@ static void print_help(void) {
 	printf("\noperations:\n");
 	printf("  nya install <pkg>...          install packages (same as -S)\n");
 	printf("  nya remove <pkg>...           remove packages (same as -R)\n");
-	printf("  nya search <term>...          search package databases (same as -Ss)\n");
+	printf("  nya search <term>...          search repos + AUR/nix/flatpak when enabled (same as -Ss)\n");
 	printf("  nya sync                      synchronize package databases (same as -Sy)\n");
-	printf("  nya update                    full system upgrade incl. AUR (sync + pacman + AUR)\n");
-	printf("  nya upgrade                   full system upgrade incl. AUR (same as update)\n");
+	printf("  nya update                    full system upgrade (sync + pacman + AUR + flatpak)\n");
+	printf("  nya upgrade                   full system upgrade (same as update)\n");
 	printf("  nya info <pkg>...             show package info (same as -Si)\n");
 	printf("  nya list                      list installed packages (same as -Q)\n");
 	printf("  nya files <pkg>...            list files of installed packages (same as -Ql)\n");
@@ -38,6 +38,8 @@ static void print_help(void) {
 	printf("  nya aur search|info|install <name>...   Arch User Repository (set 'aur = true')\n");
 	printf("  nya nix search|info|update <term>...    nixpkgs search via nix (set 'nix = true')\n");
 	printf("  nya -fp search|install|remove|list|update <app>...   flatpak integration\n");
+	printf("\nsearch sources in 'nya search': searchaur = true, searchnix = true, searchflatpak = true\n");
+	printf("root elevation: set 'sudobin = sudo' or 'sudobin = doas' in [options] (default: sudo)\n");
 	printf("  nya --read-paconfig [file]    import repositories from pacman.conf\n");
 	printf("  nya config                    print effective configuration\n");
 	printf("\npacman-compatible flags:\n");
@@ -608,6 +610,25 @@ int cli_main(int argc, char **argv) {
 		strs_free(&cl.targets);
 		return 0;
 	}
+	if (geteuid() != 0 && strcmp(c->rootdir, "/") == 0) {
+		int need_root = 0;
+		if (cl.op == 'R' || cl.op == 'U') need_root = 1;
+		else if (cl.op == 'S') need_root = cl.y || cl.u || cl.cclean > 0 || (cl.targets.n > 0 && !cl.s && cl.i == 0);
+		else if (cl.op == 'a' && cl.word && strcmp(cl.word, "install") == 0) need_root = 1;
+		if (need_root) {
+			char **args = xcalloc(argc + 2, sizeof *args);
+			args[0] = c->sudobin;
+			int ai;
+			for (ai = 0; ai < argc; ai++) args[ai + 1] = argv[ai];
+			args[argc + 1] = NULL;
+			execvp(c->sudobin, args);
+			error("failed to elevate via '%s' (install it, or run nya as root)", c->sudobin);
+			free(args);
+			config_free(c);
+			strs_free(&cl.targets);
+			return 1;
+		}
+	}
 	int needs_dbs = 0;
 	if (cl.op == 'Q' || cl.op == 'R' || cl.op == 'U') needs_dbs = 1;
 	else if (cl.op == 'S') {
@@ -666,8 +687,14 @@ int cli_main(int argc, char **argv) {
 			}
 			rc = 0;
 			do_search(c, (const char **)cl.targets.v, cl.targets.n, 0);
-			if (c->aur) {
-				aur_search_multi(c, (const char **)cl.targets.v, cl.targets.n);
+			if (c->searchaur >= 0 ? c->searchaur : c->aur) {
+				aur_search_any(c, (const char **)cl.targets.v, cl.targets.n);
+			}
+			if (c->searchnix > 0) {
+				nix_search_any(c, (const char **)cl.targets.v, cl.targets.n);
+			}
+			if (c->searchflatpak > 0) {
+				fp_search(c, (const char **)cl.targets.v, cl.targets.n);
 			}
 			break;
 		}
@@ -709,9 +736,10 @@ int cli_main(int argc, char **argv) {
 			if (t.nadd == 0 && t.nrm == 0) {
 				msg("there is nothing to do");
 				txn_free(&t);
-				break;
+			} else {
+				rc = run_txn(c, &t, 2);
 			}
-			rc = run_txn(c, &t, 2);
+			if (rc == 0) fp_update(c);
 			break;
 		}
 		if (cl.targets.n == 0) {

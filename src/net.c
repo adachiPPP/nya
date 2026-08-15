@@ -99,6 +99,7 @@ typedef struct pj {
 	FILE *fp;
 	membuf mem;
 	int urlidx;
+	int err;
 	long long dlnow;
 	long long dltotal;
 } pj;
@@ -178,6 +179,7 @@ static void pj_setup(pj *j) {
 	if (j->d->dest) {
 		j->fp = fopen(j->d->dest, "wb");
 		if (!j->fp) {
+			j->err = errno;
 			curl_easy_setopt(j->easy, CURLOPT_WRITEFUNCTION, NULL);
 		}
 	}
@@ -215,7 +217,8 @@ int dl_parallel(config *c, dl *jobs, int n) {
 		pj_setup(&js[i]);
 		if (!js[i].easy || (jobs[i].dest && !js[i].fp)) {
 			jobs[i].ok = 0;
-			snprintf(jobs[i].err, sizeof jobs[i].err, "failed to initialize download");
+			snprintf(jobs[i].err, sizeof jobs[i].err, "failed to initialize download: %s",
+			         js[i].err ? strerror(js[i].err) : "unknown error");
 			pj_finish(&js[i]);
 			continue;
 		}
@@ -255,7 +258,8 @@ int dl_parallel(config *c, dl *jobs, int n) {
 				pj_setup(j);
 				if (!j->easy || (j->d->dest && !j->fp)) {
 					j->d->ok = 0;
-					snprintf(j->d->err, sizeof j->d->err, "failed to initialize download");
+					snprintf(j->d->err, sizeof j->d->err, "failed to initialize download: %s",
+					         j->err ? strerror(j->err) : "unknown error");
 					pj_finish(j);
 					alive--;
 				} else {

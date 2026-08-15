@@ -245,6 +245,31 @@ Target = etc/hello.conf
 When = PostTransaction
 Exec = touch /tmp/nya-test/root/var/run-nya-path-hook
 EOF
+cat > "$ROOT/root/usr/share/libalpm/hooks/20-test-targets.hook" <<'EOF'
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = etc/hello.conf
+
+[Action]
+Description = Dumping hook targets
+When = PostTransaction
+Exec = /bin/sh -c 'cat > /tmp/nya-test/root/var/run-nya-hook-stdin.txt'
+NeedsTargets
+EOF
+cat > "$ROOT/root/usr/share/libalpm/hooks/30-test-noon-targets.hook" <<'EOF'
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = etc/hello.conf
+
+[Action]
+Description = Reader without NeedsTargets
+When = PostTransaction
+Exec = /bin/sh -c 'cat > /tmp/nya-test/root/var/run-nya-hook-nostdin.txt'
+EOF
 
 pkg_hello 1.0-1
 pkg_liba
@@ -276,6 +301,9 @@ $NYA $CFGARG install hello --noconfirm || fail "install hello"
 [ -f "$ROOT/root/usr/bin/hello" ] || fail "hello binary missing"
 [ -f "$ROOT/root/usr/share/doc/hello/this-is-a-very-long-directory-name-that-forces-pax-or-gnu-longname-encoding-in-the-tar-archive-1234567890/readme-with-a-very-long-name-that-exceeds-100-bytes-total-and-triggers-extended-tar-headers.txt" ] || fail "long path (pax/longname) not extracted"
 [ -f "$ROOT/root/var/run-nya-path-hook" ] || fail "path-type hook did not run"
+grep -q "^etc/hello.conf$" "$ROOT/root/var/run-nya-hook-stdin.txt" || fail "NeedsTargets hook did not receive targets on stdin"
+[ -f "$ROOT/root/var/run-nya-hook-nostdin.txt" ] || fail "non-NeedsTargets hook did not run"
+[ ! -s "$ROOT/root/var/run-nya-hook-nostdin.txt" ] || fail "non-NeedsTargets hook should get empty stdin"
 [ "$(stat -c %a "$ROOT/root/usr/bin/hello-su")" = "4755" ] || fail "setuid bit not preserved on extract"
 [ -f "$ROOT/root/usr/lib/liba.so" ] || fail "liba symlink missing"
 [ -f "$ROOT/root/usr/lib/liba.so.1.0" ] || fail "liba file missing"
@@ -389,17 +417,37 @@ ok "first-use config generation"
 echo "== version/help =="
 $NYA --version | grep -q "1.0.0" || fail "--version"
 $NYA --help | grep -q "nya install" || fail "--help"
-ok "version/help"
-
-echo "== sync vs update =="
-pkg_hello 1.2-1
-build_db hello:1.2-1 liba:1.0-1 kitty:1.0-1
-$NYA $CFGARG sync --noconfirm || fail "sync"
-$NYA $CFGARG -Q | grep -q "hello 1.1-1" || fail "sync should only refresh, not upgrade"
-$NYA $CFGARG update --noconfirm || fail "update"
+ok "version/help"	echo "== sync vs update =="
+	mkdir -p "$ROOT/fakebin"
+	cat > "$ROOT/fakebin/flatpak" <<'EOF'
+#!/usr/bin/env bash
+echo -e "Fake App\tA fake flatpak app\torg.fake.FakeApp\t1.0\tflathub"
+EOF
+	chmod +x "$ROOT/fakebin/flatpak"
+	pkg_hello 1.2-1
+	build_db hello:1.2-1 liba:1.0-1 kitty:1.0-1
+	$NYA $CFGARG sync --noconfirm || fail "sync"
+	$NYA $CFGARG -Q | grep -q "hello 1.1-1" || fail "sync should only refresh, not upgrade"
+	PATH="$ROOT/fakebin:$PATH" $NYA $CFGARG update --noconfirm || fail "update"
 $NYA $CFGARG -Q | grep -q "hello 1.2-1" || fail "update should upgrade"
 [ -d "$ROOT/root/var/lib/pacman/local/hello-1.2-1" ] || fail "hello 1.2-1 local db missing"
-ok "sync vs update"
+ok "sync vs update"	echo "== search source flags (searchaur/searchnix/searchflatpak) =="
+	cat > "$ROOT/search.conf" <<EOF
+[options]
+RootDir = $ROOT/root
+DBPath = $ROOT/root/var/lib/pacman
+CacheDir = $ROOT/cache
+LogFile = $ROOT/nya.log
+Architecture = x86_64
+aur = false
+nix = false
+searchflatpak = true
 
-echo
+[extra]
+Server = file://$ROOT/repo
+EOF
+	PATH="$ROOT/fakebin:$PATH" $NYA --config "$ROOT/search.conf" search org.fake 2>&1 | grep -q "flatpak/org.fake.FakeApp" || fail "searchflatpak not searched"
+	ok "searchflatpak = true"
+
+	echo
 echo "ALL TESTS PASSED"

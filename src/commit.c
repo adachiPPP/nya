@@ -590,6 +590,8 @@ typedef struct hookfile {
 	strs targets;
 	strs whens;
 	strs execs;
+	char *desc;
+	int needs_targets;
 } hookfile;
 
 static void hookfile_free(hookfile *h) {
@@ -598,6 +600,7 @@ static void hookfile_free(hookfile *h) {
 	strs_free(&h->targets);
 	strs_free(&h->whens);
 	strs_free(&h->execs);
+	free(h->desc);
 }
 
 static int parse_hook(const char *path, hookfile *h) {
@@ -616,13 +619,20 @@ static int parse_hook(const char *path, hookfile *h) {
 			continue;
 		}
 		char *eq = strchr(s, '=');
-		if (!eq) continue;
+		if (!eq) {
+			if (in_action && str_ieq(s, "NeedsTargets")) h->needs_targets = 1;
+			continue;
+		}
 		*eq = '\0';
 		char *key = trim(s);
 		char *val = trim(eq + 1);
 		if (in_action) {
 			if (str_ieq(key, "Exec")) strs_add(&h->execs, val);
 			else if (str_ieq(key, "When")) strs_add(&h->whens, val);
+			else if (str_ieq(key, "Description")) {
+				free(h->desc);
+				h->desc = xstrdup(val);
+			}
 		} else {
 			if (str_ieq(key, "Operation")) strs_add(&h->ops, val);
 			else if (str_ieq(key, "Type")) strs_add(&h->types, val);
@@ -670,13 +680,40 @@ static char *subst_hook(const char *exec, const char *targets, const char *files
 	return out;
 }
 
-static int run_sh_cwd(config *c, const char *cmd) {
+static int run_sh_pipe(config *c, const char *cmd, const char *stdin_data) {
+	int fds[2] = {-1, -1};
+	if (stdin_data && pipe(fds) != 0) stdin_data = NULL;
 	pid_t pid = fork();
-	if (pid < 0) return -1;
+	if (pid < 0) {
+		if (fds[0] >= 0) {
+			close(fds[0]);
+			close(fds[1]);
+		}
+		return -1;
+	}
 	if (pid == 0) {
+		int in = fds[0];
+		if (in < 0) in = open("/dev/null", O_RDONLY);
+		if (in >= 0) {
+			dup2(in, STDIN_FILENO);
+			if (in != STDIN_FILENO) close(in);
+		}
+		if (fds[1] >= 0) close(fds[1]);
 		chdir(c->rootdir);
 		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
 		_exit(127);
+	}
+	if (fds[0] >= 0) close(fds[0]);
+	if (fds[1] >= 0) {
+		if (stdin_data) {
+			size_t l = strlen(stdin_data), off = 0;
+			while (off < l) {
+				ssize_t w = write(fds[1], stdin_data + off, l - off);
+				if (w <= 0) break;
+				off += (size_t)w;
+			}
+		}
+		close(fds[1]);
 	}
 	int st;
 	while (waitpid(pid, &st, 0) < 0) {
@@ -715,6 +752,8 @@ int run_hooks(config *c, txn *t, int pre) {
 		ei++;
 	}
 	const char *hdirs[2] = {"/usr/share/libalpm/hooks", "/etc/pacman.d/hooks"};
+	strs hooks_s;
+	memset(&hooks_s, 0, sizeof hooks_s);
 	int h;
 	for (h = 0; h < 2; h++) {
 		char hroot[4096];
@@ -731,12 +770,76 @@ int run_hooks(config *c, txn *t, int pre) {
 			memset(&hf, 0, sizeof hf);
 			if (parse_hook(hpath, &hf) != 0 || !hook_when_matches(&hf, pre)) {
 				hookfile_free(&hf);
+			continue;
+		}
+		int matched = 0;
+		int k;
+		for (k = 0; k < nevents && !matched; k++) {
+			int op_ok = 0;
+			int o2;
+			for (o2 = 0; o2 < hf.ops.n; o2++) {
+				if (strcmp(hf.ops.v[o2], ev[k].op) == 0) {
+					op_ok = 1;
+					break;
+				}
+			}
+			if (!op_ok) continue;
+			int t2;
+			for (t2 = 0; t2 < hf.types.n && !matched; t2++) {
+				if (str_ieq(hf.types.v[t2], "Package")) {
+					int g;
+					for (g = 0; g < hf.targets.n && !matched; g++) {
+						if (fnmatch(hf.targets.v[g], ev[k].name, 0) == 0) matched = 1;
+					}
+				} else {
+					int g;
+					for (g = 0; g < hf.targets.n && !matched; g++) {
+						int p2;
+						for (p2 = 0; p2 < ev[k].paths.n && !matched; p2++) {
+							const char *rel = ev[k].paths.v[p2] + strlen(c->rootdir);
+							while (*rel == '/') rel++;
+							if (fnmatch(hf.targets.v[g], rel, 0) == 0) matched = 1;
+						}
+					}
+				}
+			}
+		}
+		hookfile_free(&hf);
+		if (matched) strs_add(&hooks_s, hpath);
+		}
+		closedir(d);
+	}
+	if (hooks_s.n > 1) {
+		int x;
+		for (x = 0; x < hooks_s.n; x++) {
+			int y;
+			for (y = x + 1; y < hooks_s.n; y++) {
+				const char *ax = strrchr(hooks_s.v[x], '/') + 1;
+				const char *by = strrchr(hooks_s.v[y], '/') + 1;
+				if (strcmp(ax, by) > 0) {
+					char *tmp = hooks_s.v[x];
+					hooks_s.v[x] = hooks_s.v[y];
+					hooks_s.v[y] = tmp;
+				}
+			}
+		}
+	}
+	if (hooks_s.n > 0) {
+		msg("Running %s hooks...", pre ? "pre-transaction" : "post-transaction");
+		int seq = 0;
+		for (h = 0; h < hooks_s.n; h++) {
+			hookfile hf;
+			memset(&hf, 0, sizeof hf);
+			if (parse_hook(hooks_s.v[h], &hf) != 0) {
+				hookfile_free(&hf);
 				continue;
 			}
 			strs targets_s;
 			memset(&targets_s, 0, sizeof targets_s);
 			strs files_s;
 			memset(&files_s, 0, sizeof files_s);
+			strs files_rel_s;
+			memset(&files_rel_s, 0, sizeof files_rel_s);
 			int matched = 0;
 			int k;
 			for (k = 0; k < nevents; k++) {
@@ -768,6 +871,7 @@ int run_hooks(config *c, txn *t, int pre) {
 								while (*rel == '/') rel++;
 								if (fnmatch(hf.targets.v[g], rel, 0) == 0) {
 									if (!strs_has(&files_s, ev[k].paths.v[p2])) strs_add(&files_s, ev[k].paths.v[p2]);
+									if (!strs_has(&files_rel_s, rel)) strs_add(&files_rel_s, rel);
 									matched = 1;
 								}
 							}
@@ -775,9 +879,10 @@ int run_hooks(config *c, txn *t, int pre) {
 					}
 				}
 			}
-			if (matched) {
+			if (matched && hf.execs.n > 0) {
 				char tbuf[8192] = "";
 				char fbuf[65536] = "";
+				char *payload = NULL;
 				int x;
 				for (x = 0; x < targets_s.n; x++) {
 					if (tbuf[0]) strncat(tbuf, " ", sizeof tbuf - strlen(tbuf) - 1);
@@ -787,19 +892,43 @@ int run_hooks(config *c, txn *t, int pre) {
 					strncat(fbuf, files_s.v[x], sizeof fbuf - strlen(fbuf) - 1);
 					strncat(fbuf, "\n", sizeof fbuf - strlen(fbuf) - 1);
 				}
+				if (hf.needs_targets) {
+					size_t plen = 1;
+					for (x = 0; x < files_rel_s.n; x++) plen += strlen(files_rel_s.v[x]) + 1;
+					for (x = 0; x < targets_s.n; x++) plen += strlen(targets_s.v[x]) + 1;
+					payload = xmalloc(plen);
+					char *pp = payload;
+					for (x = 0; x < files_rel_s.n; x++) {
+						size_t l = strlen(files_rel_s.v[x]);
+						memcpy(pp, files_rel_s.v[x], l);
+						pp += l;
+						*pp++ = '\n';
+					}
+					for (x = 0; x < targets_s.n; x++) {
+						size_t l = strlen(targets_s.v[x]);
+						memcpy(pp, targets_s.v[x], l);
+						pp += l;
+						*pp++ = '\n';
+					}
+					*pp = '\0';
+				}
+				const char *base = strrchr(hooks_s.v[h], '/');
+				base = base ? base + 1 : hooks_s.v[h];
+				printf("(%d/%d) %s...\n", ++seq, hooks_s.n, hf.desc ? hf.desc : base);
 				int e2;
 				for (e2 = 0; e2 < hf.execs.n; e2++) {
 					char *cmd = subst_hook(hf.execs.v[e2], tbuf, fbuf);
-					if (g_verbose) msg("running hook %s", de->d_name);
-					run_sh_cwd(c, cmd);
+					run_sh_pipe(c, cmd, payload);
 					free(cmd);
 				}
+				free(payload);
 			}
 			strs_free(&targets_s);
 			strs_free(&files_s);
+			strs_free(&files_rel_s);
 			hookfile_free(&hf);
 		}
-		closedir(d);
+		strs_free(&hooks_s);
 	}
 	for (i = 0; i < nevents; i++) {
 		free(ev[i].op);

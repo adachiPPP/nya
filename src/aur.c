@@ -123,9 +123,9 @@ int aur_search(config *c, const char *term, int quiet) {
 	return count;
 }
 
-int aur_search_multi(config *c, const char **terms, int n) {
-	if (!aur_enabled(c)) return -1;
-	if (n == 1) return aur_search(c, terms[0], 0);
+static int aur_search_multi_core(config *c, const char **terms, int n, int check) {
+	if (check && !aur_enabled(c)) return -1;
+	if (check && n == 1) return aur_search(c, terms[0], 0);
 	json **roots = xcalloc(n, sizeof *roots);
 	strs *sets = xcalloc(n, sizeof *sets);
 	int i;
@@ -185,6 +185,14 @@ int aur_search_multi(config *c, const char **terms, int n) {
 	free(roots);
 	free(sets);
 	return ok ? count : -1;
+}
+
+int aur_search_multi(config *c, const char **terms, int n) {
+	return aur_search_multi_core(c, terms, n, 1);
+}
+
+int aur_search_any(config *c, const char **terms, int n) {
+	return aur_search_multi_core(c, terms, n, 0);
 }
 
 int aur_info(config *c, const char *name) {
