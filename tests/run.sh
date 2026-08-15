@@ -449,5 +449,41 @@ EOF
 	PATH="$ROOT/fakebin:$PATH" $NYA --config "$ROOT/search.conf" search org.fake 2>&1 | grep -q "flatpak/org.fake.FakeApp" || fail "searchflatpak not searched"
 	ok "searchflatpak = true"
 
+	echo "== reinstall same version =="
+	$NYA $CFGARG install hello --noconfirm 2>&1 | grep -q "reinstalling hello" || fail "reinstall should say reinstalling"
+	grep -q "1.2-1 1.2-1" "$ROOT/root/usr/share/nya/upgraded" || fail "reinstall should run post_upgrade with same versions"
+	$NYA $CFGARG -Q | grep -q "hello 1.2-1" || fail "hello missing after reinstall"
+	ok "reinstall same version"
+
+	echo "== remove deletes cached tarballs =="
+	[ -f "$ROOT/root/var/cache/pacman/pkg/hello-1.2-1-x86_64.pkg.tar.zst" ] || fail "hello tarball missing from cache before remove"
+	$NYA $CFGARG remove hello --noconfirm || fail "remove hello"
+	[ ! -f "$ROOT/root/var/cache/pacman/pkg/hello-1.2-1-x86_64.pkg.tar.zst" ] || fail "hello tarball still in cache after remove"
+	[ -f "$ROOT/root/var/cache/pacman/pkg/kitty-1.0-1-x86_64.pkg.tar.zst" ] || fail "kitty tarball should remain (kitty not removed)"
+	ok "remove deletes cached tarballs"
+
+	echo "== install flatpak fallback (lowest priority) =="
+	mkdir -p "$ROOT/fpbin"
+	cat > "$ROOT/fpbin/flatpak" <<EOF
+#!/usr/bin/env bash
+echo "flatpak args: \$*" >> /tmp/nya-test/fp-args.log
+exit 0
+EOF
+	chmod +x "$ROOT/fpbin/flatpak"
+	rm -f "$ROOT/fp-args.log"
+	out=$(PATH="$ROOT/fpbin:$PATH" $NYA $CFGARG install org.fake.FakeApp --noconfirm 2>&1) || fail "install should fall back to flatpak"
+	grep -q "flatpak args: install org.fake.FakeApp" "$ROOT/fp-args.log" || fail "flatpak install not invoked with the right args"
+	echo "$out" | grep -q "Packages (0)" && fail "empty txn summary should not print after flatpak fallback"
+	echo "$out" | grep -q "Proceed with installation" && fail "empty txn prompt should not print after flatpak fallback"
+	ok "install flatpak fallback"
+
+	echo "== remove flatpak fallback =="
+	rm -f "$ROOT/fp-args.log"
+	out=$(PATH="$ROOT/fpbin:$PATH" $NYA $CFGARG remove org.fake.FakeApp --noconfirm 2>&1) || fail "remove should fall back to flatpak"
+	grep -q "flatpak args: uninstall org.fake.FakeApp" "$ROOT/fp-args.log" || fail "flatpak uninstall not invoked with the right args"
+	echo "$out" | grep -q "Packages (0)" && fail "empty txn summary should not print after flatpak uninstall fallback"
+	echo "$out" | grep -q "Do you want to remove" && fail "empty txn prompt should not print after flatpak uninstall fallback"
+	ok "remove flatpak fallback"
+
 	echo
 echo "ALL TESTS PASSED"

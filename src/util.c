@@ -411,6 +411,12 @@ void rm_rf(const char *path) {
 	}
 }
 
+const char *invoking_user_name(void) {
+	const char *u = getenv("DOAS_USER");
+	if (!u || !*u) u = getenv("SUDO_USER");
+	return (u && *u) ? u : NULL;
+}
+
 int run_cmd(char *const argv[]) {
 	pid_t pid = fork();
 	if (pid < 0) return -1;

@@ -311,12 +311,6 @@ static int makepkg_available(void) {
 	       access("/usr/local/bin/makepkg", X_OK) == 0;
 }
 
-static const char *build_user_name(void) {
-	const char *u = getenv("DOAS_USER");
-	if (!u || !*u) u = getenv("SUDO_USER");
-	return (u && *u) ? u : NULL;
-}
-
 static void build_dir_for(const char *user, char *out, size_t n) {
 	if (user) {
 		struct passwd *pw = getpwnam(user);
@@ -350,10 +344,40 @@ static void chown_r(const char *path, uid_t uid, gid_t gid) {
 	nftw(path, chown_cb, 32, FTW_PHYS);
 }
 
+int aur_pkg_exists(config *c, const char *name) {
+	if (!aur_enabled(c)) return 0;
+	char *enc = url_encode(name);
+	char url[4600];
+	snprintf(url, sizeof url, "%s/rpc/v5/info/%s", c->aurbase, enc);
+	free(enc);
+	char *data;
+	long len;
+	if (dl_url(c, url, &data, &len) != 0) return 1; /* network issue: be optimistic, let download retries handle it */
+	json *root = json_parse(data, len);
+	free(data);
+	if (!root) return 1;
+	json *results = json_get(root, "results");
+	int found = 0;
+	json *r;
+	for (r = results ? results->child : NULL; r; r = r->next) {
+		const char *n = json_str(json_get(r, "Name"));
+		if (n && strcmp(n, name) == 0) {
+			found = 1;
+			break;
+		}
+	}
+	json_free(root);
+	return found;
+}
+
 int aur_build_install(config *c, const char *name, txn *t) {
 	if (!aur_enabled(c)) return -1;
 	if (aur_malware_check(c, name)) {
 		error("refusing to install '%s': listed as malware in aur-malware-check (https://github.com/lenucksi/aur-malware-check)", name);
+		return -1;
+	}
+	if (!aur_pkg_exists(c, name)) {
+		warn("%s: not found in the AUR", name);
 		return -1;
 	}
 	if (!makepkg_available()) {
@@ -361,7 +385,7 @@ int aur_build_install(config *c, const char *name, txn *t) {
 		return -1;
 	}
 	int root = geteuid() == 0;
-	const char *buser = root ? build_user_name() : NULL;
+	const char *buser = root ? invoking_user_name() : NULL;
 	if (root && !buser) {
 		error("cannot run makepkg as root; run 'nya aur install %s' without sudo/doas", name);
 		return -1;

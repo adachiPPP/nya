@@ -1,5 +1,7 @@
 #include "nya.h"
 
+static void remove_cached_tarballs(config *c, pkg *p);
+
 static int lock_fd = -1;
 static char lock_path[4096];
 
@@ -399,8 +401,44 @@ static int remove_pkg(config *c, pkg *p, int nosave) {
 	}
 	db_remove_local(c, p->name, p->version);
 	log_alpm("removed %s (%s)", p->name, p->version);
+	remove_cached_tarballs(c, p);
 	if (sha) hmap_free(sha);
 	return 0;
+}
+
+static void remove_cached_tarballs(config *c, pkg *p) {
+	if (!p->name) return;
+	int i;
+	for (i = 0; i < c->cachedirs.n; i++) {
+		const char *dir = cfg_rooted(c, c->cachedirs.v[i]);
+		if (p->filename && *p->filename) {
+			char path[4600];
+			snprintf(path, sizeof path, "%s/%s", dir, p->filename);
+			if (is_file(path)) {
+				unlink(path);
+				log_alpm("removed cached file %s", p->filename);
+			}
+		}
+		char prefix[512];
+		snprintf(prefix, sizeof prefix, "%s-", p->name);
+		size_t plen = strlen(prefix);
+		DIR *d = opendir(dir);
+		if (!d) continue;
+		struct dirent *de;
+		while ((de = readdir(d)) != NULL) {
+			const char *n = de->d_name;
+			if (strncmp(n, prefix, plen) != 0) continue;
+			if (!isdigit((unsigned char)n[plen])) continue;
+			if (!strstr(n, ".pkg.tar.")) continue;
+			char path[4600];
+			snprintf(path, sizeof path, "%s/%s", dir, n);
+			if (is_file(path)) {
+				unlink(path);
+				log_alpm("removed cached file %s", n);
+			}
+		}
+		closedir(d);
+	}
 }
 
 static int in_rm_list(txn *t, const char *name) {
@@ -438,7 +476,9 @@ static int install_pkg(config *c, pkg *p, txn *t, const char *label) {
 	p->validation = xstrdup((p->sha256sum && *p->sha256sum) ? "sha256" : "none");
 	if (db_write_local_pkg(c, p) != 0) return -1;
 	if (p->is_upgrade && old) {
-		db_remove_local(c, old->name, old->version);
+		if (strcmp(old->version, p->version) != 0) {
+			db_remove_local(c, old->name, old->version);
+		}
 		log_alpm("upgraded %s (%s -> %s)", p->name, old->version, p->version);
 	} else {
 		log_alpm("installed %s (%s)", p->name, p->version);
@@ -958,7 +998,7 @@ int txn_commit(config *c, txn *t) {
 		pkg *p = t->add[i];
 		if (!p->is_dep && p->reason != 1) continue;
 		snprintf(label, sizeof label, "%s(%d/%d) %s %s%s", col_green(), seq++, t->nrm + t->nadd,
-		         p->is_upgrade ? "upgrading" : "installing", p->name, col_reset());
+		         p->is_reinstall ? "reinstalling" : p->is_upgrade ? "upgrading" : "installing", p->name, col_reset());
 		if (install_pkg(c, p, t, label) != 0) {
 			unlock_db();
 			return -1;
@@ -968,7 +1008,7 @@ int txn_commit(config *c, txn *t) {
 		pkg *p = t->add[i];
 		if (p->is_dep || p->reason == 1) continue;
 		snprintf(label, sizeof label, "%s(%d/%d) %s %s%s", col_green(), seq++, t->nrm + t->nadd,
-		         p->is_upgrade ? "upgrading" : "installing", p->name, col_reset());
+		         p->is_reinstall ? "reinstalling" : p->is_upgrade ? "upgrading" : "installing", p->name, col_reset());
 		if (install_pkg(c, p, t, label) != 0) {
 			unlock_db();
 			return -1;

@@ -749,9 +749,42 @@ int cli_main(int argc, char **argv) {
 		}
 		txn t;
 		txn_init(&t, c);
-		if (txn_build_install(c, (const char **)cl.targets.v, cl.targets.n, &t) != 0) {
+		strs notfound;
+		memset(&notfound, 0, sizeof notfound);
+		if (txn_build_install(c, (const char **)cl.targets.v, cl.targets.n, &t, &notfound) != 0) {
 			txn_free(&t);
+			strs_free(&notfound);
 			rc = 1;
+			break;
+		}
+		if (notfound.n > 0) {
+			/* targets not in any repo or the AUR: flatpak is the lowest-priority fallback */
+			if (fp_available()) {
+				char **fpargs = xcalloc(notfound.n + 2, sizeof *fpargs);
+				fpargs[0] = "install";
+				for (j = 0; j < notfound.n; j++) fpargs[j + 1] = notfound.v[j];
+				if (fp_run(notfound.n + 1, fpargs) != 0) {
+					for (j = 0; j < notfound.n; j++) error("target not found: %s", notfound.v[j]);
+					free(fpargs);
+					txn_free(&t);
+					strs_free(&notfound);
+					rc = 1;
+					break;
+				}
+				free(fpargs);
+			} else {
+				for (j = 0; j < notfound.n; j++) error("target not found: %s", notfound.v[j]);
+				txn_free(&t);
+				strs_free(&notfound);
+				rc = 1;
+				break;
+			}
+		}
+		strs_free(&notfound);
+		if (t.nadd == 0 && t.nrm == 0) {
+			/* everything was handled by the flatpak fallback */
+			txn_free(&t);
+			rc = 0;
 			break;
 		}
 		if (cl.w) {
@@ -774,9 +807,42 @@ int cli_main(int argc, char **argv) {
 		}
 		txn t;
 		txn_init(&t, c);
-		if (txn_build_remove(c, (const char **)cl.targets.v, cl.targets.n, cl.s, cl.n, cl.cclean > 0, cl.u, &t) != 0) {
+		strs notfound;
+		memset(&notfound, 0, sizeof notfound);
+		if (txn_build_remove(c, (const char **)cl.targets.v, cl.targets.n, cl.s, cl.n, cl.cclean > 0, cl.u, &t, &notfound) != 0) {
 			txn_free(&t);
+			strs_free(&notfound);
 			rc = 1;
+			break;
+		}
+		if (notfound.n > 0) {
+			/* targets not installed as pacman packages: flatpak is the fallback */
+			if (fp_available()) {
+				char **fpargs = xcalloc(notfound.n + 2, sizeof *fpargs);
+				fpargs[0] = "uninstall";
+				for (j = 0; j < notfound.n; j++) fpargs[j + 1] = notfound.v[j];
+				if (fp_run(notfound.n + 1, fpargs) != 0) {
+					for (j = 0; j < notfound.n; j++) error("target not found: %s", notfound.v[j]);
+					free(fpargs);
+					txn_free(&t);
+					strs_free(&notfound);
+					rc = 1;
+					break;
+				}
+				free(fpargs);
+			} else {
+				for (j = 0; j < notfound.n; j++) error("target not found: %s", notfound.v[j]);
+				txn_free(&t);
+				strs_free(&notfound);
+				rc = 1;
+				break;
+			}
+		}
+		strs_free(&notfound);
+		if (t.nadd == 0 && t.nrm == 0) {
+			/* everything was handled by the flatpak fallback */
+			txn_free(&t);
+			rc = 0;
 			break;
 		}
 		rc = run_txn(c, &t, 1);
@@ -790,7 +856,7 @@ int cli_main(int argc, char **argv) {
 		}
 		txn t;
 		txn_init(&t, c);
-		if (txn_build_install(c, (const char **)cl.targets.v, cl.targets.n, &t) != 0) {
+		if (txn_build_install(c, (const char **)cl.targets.v, cl.targets.n, &t, NULL) != 0) {
 			txn_free(&t);
 			rc = 1;
 			break;

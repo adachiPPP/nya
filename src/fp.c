@@ -1,8 +1,58 @@
 #include "nya.h"
 
-static int fp_available(void) {
-	return access("/usr/bin/flatpak", X_OK) == 0 || access("/bin/flatpak", X_OK) == 0 ||
-	       access("/usr/local/bin/flatpak", X_OK) == 0;
+int fp_available(void) {
+	if (access("/usr/bin/flatpak", X_OK) == 0 || access("/bin/flatpak", X_OK) == 0 ||
+	    access("/usr/local/bin/flatpak", X_OK) == 0)
+		return 1;
+	const char *path = getenv("PATH");
+	if (!path) return 0;
+	char *copy = xstrdup(path);
+	char *save = NULL;
+	int found = 0;
+	for (char *dir = strtok_r(copy, ":", &save); dir; dir = strtok_r(NULL, ":", &save)) {
+		if (!dir[0]) continue;
+		char buf[4096];
+		snprintf(buf, sizeof buf, "%s/flatpak", dir);
+		if (access(buf, X_OK) == 0) {
+			found = 1;
+			break;
+		}
+	}
+	free(copy);
+	return found;
+}
+
+/* when running as root (elevated via sudo/doas), run flatpak as the invoking
+ * user so it manages the user install instead of root's. */
+static char **fp_user_argv(char *const argv[]) {
+	if (geteuid() != 0) return NULL;
+	const char *user = invoking_user_name();
+	if (!user) return NULL;
+	int n = 0;
+	while (argv[n]) n++;
+	char **args = xcalloc(n + 5, sizeof *args);
+	args[0] = "runuser";
+	args[1] = "-u";
+	args[2] = (char *)user;
+	args[3] = "--";
+	int i;
+	for (i = 0; i < n; i++) args[4 + i] = argv[i];
+	args[n + 4] = NULL;
+	return args;
+}
+
+static int fp_cmd(char *const argv[]) {
+	char **wrap = fp_user_argv(argv);
+	int rc = run_cmd(wrap ? wrap : argv);
+	free(wrap);
+	return rc;
+}
+
+static int fp_capture(char *const argv[], char **out) {
+	char **wrap = fp_user_argv(argv);
+	int rc = run_capture_quiet(wrap ? wrap : argv, out);
+	free(wrap);
+	return rc;
 }
 
 int fp_run(int argc, char **argv) {
@@ -28,7 +78,9 @@ int fp_run(int argc, char **argv) {
 	int i;
 	for (i = 1; i < argc; i++) args[i + 1] = argv[i];
 	args[argc + 1] = NULL;
-	return run_cmd(args);
+	int rc = fp_cmd(args);
+	free(args);
+	return rc;
 }
 
 int fp_search(config *c, const char **terms, int n) {
@@ -42,7 +94,7 @@ int fp_search(config *c, const char **terms, int n) {
 	for (i = 0; i < n; i++) argv[i + 3] = (char *)terms[i];
 	argv[n + 3] = NULL;
 	char *out;
-	if (run_capture_quiet(argv, &out) != 0) {
+	if (fp_capture(argv, &out) != 0) {
 		free(argv);
 		free(out);
 		return 0;
@@ -92,7 +144,7 @@ int fp_update(config *c) {
 	}
 	info("Updating flatpak applications...");
 	char *argv[] = {"flatpak", "update", "-y", NULL};
-	int rc = run_cmd(argv);
+	int rc = fp_cmd(argv);
 	if (rc != 0) warn("flatpak update failed");
 	return rc;
 }

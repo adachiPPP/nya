@@ -152,7 +152,7 @@ static int local_group_members(const char *group, strs *out) {
 	return out->n;
 }
 
-int txn_build_install(config *c, const char **targets, int ntargets, txn *t) {
+int txn_build_install(config *c, const char **targets, int ntargets, txn *t, strs *notfound) {
 	int ti;
 	for (ti = 0; ti < ntargets; ti++) {
 		const char *target = targets[ti];
@@ -213,6 +213,11 @@ int txn_build_install(config *c, const char **targets, int ntargets, txn *t) {
 						continue;
 					}
 				}
+				if (notfound) {
+					strs_add(notfound, dep.name);
+					depspec_free(&dep);
+					continue;
+				}
 				error("target not found: %s", target);
 				depspec_free(&dep);
 				return -1;
@@ -264,14 +269,18 @@ int txn_build_install(config *c, const char **targets, int ntargets, txn *t) {
 		pkg *l = db_find_local(p->name);
 		if (l) {
 			if (vercmp(l->version, p->version) >= 0) {
-				if (!p->is_dep) {
-					warn("%s-%s is up to date -- skipping", p->name, p->version);
+				if (p->is_dep) {
+					pkg *tmp = t->add[idx];
+					t->add[idx] = t->add[t->nadd - 1];
+					t->add[t->nadd - 1] = tmp;
+					t->nadd--;
+					idx--;
+					continue;
 				}
-				pkg *tmp = t->add[idx];
-				t->add[idx] = t->add[t->nadd - 1];
-				t->add[t->nadd - 1] = tmp;
-				t->nadd--;
-				idx--;
+				/* explicitly requested: reinstall the same version */
+				p->is_upgrade = 1;
+				p->is_reinstall = 1;
+				p->reason = l->reason;
 				continue;
 			}
 			p->is_upgrade = 1;
@@ -509,7 +518,7 @@ static int depends_on_rm(txn *t, pkg *l) {
 	return 0;
 }
 
-int txn_build_remove(config *c, const char **targets, int ntargets, int recursive, int nosave, int cascade, int unneeded, txn *t) {
+int txn_build_remove(config *c, const char **targets, int ntargets, int recursive, int nosave, int cascade, int unneeded, txn *t, strs *notfound) {
 	int i;
 	for (i = 0; i < ntargets; i++) {
 		const char *target = targets[i];
@@ -525,11 +534,14 @@ int txn_build_remove(config *c, const char **targets, int ntargets, int recursiv
 				}
 				strs_free(&members);
 				continue;
+			}				if (notfound) {
+					strs_add(notfound, target);
+					continue;
+				}
+				error("target not found: %s", target);
+				return -1;
 			}
-			error("target not found: %s", target);
-			return -1;
-		}
-		if (unneeded && required_by_any(c, t, l)) {
+			if (unneeded && required_by_any(c, t, l)) {
 			warn("%s: skipping, required by other packages", l->name);
 			continue;
 		}
