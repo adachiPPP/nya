@@ -7,7 +7,7 @@ call pacman — every operation (database parsing, dependency resolution,
 download, extraction, scriptlets, hooks, removal) is implemented natively.
 
 ## Info
-the package manager can automatically find packages from flatpak aur and pacman
+the package manager can automatically find packages **IF ENABLED IN THE CONFIG** from flatpak aur and pacman
 the priority = **pacman** -> **aur** -> **flatpak**
 *Note: you can search nix packages but the whole purpose of nix is being configured from flakes so you can use nya to search for nix packages not to install them*
 
