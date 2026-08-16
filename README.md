@@ -9,7 +9,7 @@ download, extraction, scriptlets, hooks, removal) is implemented natively.
 ## Info
 the package manager can automatically find packages **IF ENABLED IN THE CONFIG** from flatpak aur and pacman.
 
-the priority = **pacman** -> **aur** -> **flatpak**
+the priority = **pacman** -> **hosts** <-> **aur** -> **flatpak**
 
 *Note: you can search nix packages but the whole purpose of nix is being configured from flakes so you can use nya to search for nix packages not to install them*
 
