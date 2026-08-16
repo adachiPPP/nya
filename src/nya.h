@@ -168,6 +168,7 @@ typedef struct config {
 	char *nixchannel;
 	char *aurbase;
 	char *sudobin;
+	char *hostsrepo;
 	strs cachedirs;
 	strs holdpkg;
 	strs ignorepkg;
@@ -182,6 +183,7 @@ typedef struct config {
 	int searchaur;
 	int searchnix;
 	int searchflatpak;
+	int aurfirst;
 	repo **repos;
 	int nrepos;
 } config;
@@ -355,6 +357,8 @@ int nix_search_any(config *c, const char **terms, int n);
 int fp_run(int argc, char **argv);
 int fp_search(config *c, const char **terms, int n);
 int fp_update(config *c);
+int host_install(config *c, const char *name);
+int host_try_install(config *c, const char *name);
 
 typedef struct json {
 	int type;

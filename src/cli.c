@@ -38,7 +38,10 @@ static void print_help(void) {
 	printf("  nya aur search|info|install <name>...   Arch User Repository (set 'aur = true')\n");
 	printf("  nya nix search|info|update <term>...    nixpkgs search via nix (set 'nix = true')\n");
 	printf("  nya -fp search|install|remove|list|update <app>...   flatpak integration\n");
-	printf("\nsearch sources in 'nya search': searchaur = true, searchnix = true, searchflatpak = true\n");
+	printf("  nya host install|remove <name>...   build & install from nya-hosts git repos\n");
+	printf("\ninstall fallback: repos -> hosts -> aur -> flatpak (set 'aurfirst = true' to swap hosts/aur)\n");
+	printf("search sources in 'nya search': searchaur = true, searchnix = true, searchflatpak = true\n");
+	printf("hosts repo: set 'hostsrepo = <url-or-dir>' in [options] (default: https://adachippp.github.io/nya-hosts)\n");
 	printf("root elevation: set 'sudobin = sudo' or 'sudobin = doas' in [options] (default: sudo)\n");
 	printf("  nya --read-paconfig [file]    import repositories from pacman.conf\n");
 	printf("  nya config                    print effective configuration\n");
@@ -356,6 +359,10 @@ static int word_command(cli *cl, const char *w) {
 		cl->op = 'f';
 		return 0;
 	}
+	if (strcmp(w, "host") == 0) {
+		cl->op = 'H';
+		return 0;
+	}
 	if (strcmp(w, "config") == 0) {
 		cl->op = 'c';
 		return 0;
@@ -477,6 +484,8 @@ static void print_config(config *c) {
 	printf("ParallelDl    = %d\n", c->parallel);
 	printf("aur           = %s\n", c->aur ? "true" : "false");
 	printf("nix           = %s\n", c->nix ? "true" : "false");
+	printf("HostsRepo     = %s\n", c->hostsrepo ? c->hostsrepo : "(none)");
+	printf("AurFirst      = %s\n", c->aurfirst ? "true" : "false");
 	for (i = 0; i < c->nrepos; i++) {
 		repo *r = c->repos[i];
 		printf("\n[%s]\n", r->name);
@@ -515,7 +524,7 @@ int cli_main(int argc, char **argv) {
 		}
 		if (cl.op == 0 && cl.targets.n == 0) {
 			if (word_command(&cl, arg) == 0) {
-				if (cl.op == 'n' || cl.op == 'a' || cl.op == 'f') {
+				if (cl.op == 'n' || cl.op == 'a' || cl.op == 'f' || cl.op == 'H') {
 					if (i + 1 < argc && argv[i + 1][0] != '-') {
 						cl.word = argv[++i];
 					}
@@ -615,6 +624,7 @@ int cli_main(int argc, char **argv) {
 		if (cl.op == 'R' || cl.op == 'U') need_root = 1;
 		else if (cl.op == 'S') need_root = cl.y || cl.u || cl.cclean > 0 || (cl.targets.n > 0 && !cl.s && cl.i == 0);
 		else if (cl.op == 'a' && cl.word && strcmp(cl.word, "install") == 0) need_root = 1;
+		else if (cl.op == 'H' && cl.word && strcmp(cl.word, "install") == 0) need_root = 1;
 		if (need_root) {
 			char **args = xcalloc(argc + 2, sizeof *args);
 			args[0] = c->sudobin;
@@ -633,7 +643,7 @@ int cli_main(int argc, char **argv) {
 	if (cl.op == 'Q' || cl.op == 'R' || cl.op == 'U') needs_dbs = 1;
 	else if (cl.op == 'S') {
 		needs_dbs = !(cl.y && !cl.u && !cl.s && cl.i == 0 && cl.cclean == 0 && cl.targets.n == 0);
-	} else if (cl.op == 'a') needs_dbs = 1;
+	} else if (cl.op == 'a' || cl.op == 'H') needs_dbs = 1;
 	if (needs_dbs) db_load_all(c);
 	int rc = 0;
 	switch (cl.op) {
@@ -923,6 +933,52 @@ int cli_main(int argc, char **argv) {
 			}
 		} else {
 			error("unknown aur operation '%s'", cl.word);
+			rc = 1;
+		}
+		break;
+	}
+	case 'H': {
+		if (!cl.word) {
+			error("host operation required: install|remove");
+			rc = 1;
+			break;
+		}
+		if (strcmp(cl.word, "install") == 0) {
+			if (cl.targets.n == 0) {
+				error("no host specified");
+				rc = 1;
+				break;
+			}
+			for (j = 0; j < cl.targets.n; j++) {
+				if (host_install(c, cl.targets.v[j]) != 0) rc = 1;
+			}
+		} else if (strcmp(cl.word, "remove") == 0) {
+			if (cl.targets.n == 0) {
+				error("no host specified");
+				rc = 1;
+				break;
+			}
+			txn t;
+			txn_init(&t, c);
+			strs notfound;
+			memset(&notfound, 0, sizeof notfound);
+			if (txn_build_remove(c, (const char **)cl.targets.v, cl.targets.n, 0, 0, 0, 0, &t, &notfound) != 0) {
+				txn_free(&t);
+				strs_free(&notfound);
+				rc = 1;
+				break;
+			}
+			if (notfound.n > 0) {
+				for (j = 0; j < notfound.n; j++) error("target not found: %s", notfound.v[j]);
+				txn_free(&t);
+				strs_free(&notfound);
+				rc = 1;
+				break;
+			}
+			strs_free(&notfound);
+			rc = run_txn(c, &t, 1);
+		} else {
+			error("unknown host operation '%s'", cl.word);
 			rc = 1;
 		}
 		break;

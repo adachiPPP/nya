@@ -485,5 +485,199 @@ EOF
 	echo "$out" | grep -q "Do you want to remove" && fail "empty txn prompt should not print after flatpak uninstall fallback"
 	ok "remove flatpak fallback"
 
+	# ---- nya host (nya-hosts git recipes) ----
+	mkdir -p "$ROOT/host-src/hostapp" "$ROOT/host-src/bundled" "$ROOT/host-src/simple" "$ROOT/host-repo"
+	cat > "$ROOT/host-src/hostapp/Makefile" <<'EOF'
+build:
+	@mkdir -p build && printf '#!/bin/sh\necho hello from hostapp\n' > build/hostapp && chmod +x build/hostapp
+install:
+	@install -Dm755 build/hostapp $(DESTDIR)/usr/bin/hostapp
+EOF
+	( cd "$ROOT/host-src/hostapp" && git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+	cat > "$ROOT/host-src/bundled/Makefile" <<'EOF'
+build:
+	@mkdir -p build && printf '#!/bin/sh\necho bundled app\n' > build/bundled && chmod +x build/bundled && printf 'notreallyalib' > build/libbundled.so && printf 'junk' > build/CMakeCache.txt && touch build/compile_commands.json
+EOF
+	( cd "$ROOT/host-src/bundled" && git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+	cat > "$ROOT/host-src/simple/Makefile" <<'EOF'
+build:
+	@mkdir -p build && printf '#!/bin/sh\necho simple tool\n' > build/tool && chmod +x build/tool
+EOF
+	( cd "$ROOT/host-src/simple" && git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+	cat > "$ROOT/host-repo/hostapp" <<EOF
+[repo]
+file://$ROOT/host-src/hostapp
+
+[folder]
+hostapp
+
+[instructions]
+make build
+EOF
+	cat > "$ROOT/host-repo/bundled" <<EOF
+[repo]
+file://$ROOT/host-src/bundled
+
+[folder]
+bundled
+
+[instructions]
+make build
+
+[binary]
+./build/bundled
+EOF
+	cat > "$ROOT/host-repo/simple" <<EOF
+[repo]
+file://$ROOT/host-src/simple
+
+[folder]
+simple
+
+[instructions]
+make build
+
+[binary]
+./build/tool
+EOF
+	cat > "$ROOT/hosts.conf" <<EOF
+[options]
+RootDir = $ROOT/root
+DBPath = var/lib/pacman
+CacheDir = var/cache/pacman/pkg
+LogFile = $ROOT/nya.log
+hostsrepo = $ROOT/host-repo
+EOF
+	HCFG="--config $ROOT/hosts.conf"
+	# hermetic: keep the build cache inside the sandbox instead of $HOME
+	HHOME="HOME=$ROOT/home"
+
+	echo "== host install (staged via project install rules) =="
+	env $HHOME $NYA $HCFG host install hostapp --noconfirm || fail "host install hostapp"
+	[ -x "$ROOT/root/usr/bin/hostapp" ] || fail "hostapp not installed to /usr/bin"
+	"$ROOT/root/usr/bin/hostapp" | grep -q "hello from hostapp" || fail "hostapp binary broken"
+	$NYA $HCFG -Q | grep -q "hostapp 1" || fail "hostapp not in local db"
+	ok "host install staged"
+
+	echo "== host install (bundle dir fallback) =="
+	env $HHOME $NYA $HCFG host install bundled --noconfirm || fail "host install bundled"
+	[ -L "$ROOT/root/usr/bin/bundled" ] || fail "bundled entry should be a symlink into /usr/lib/nya"
+	[ -f "$ROOT/root/usr/lib/nya/bundled/libbundled.so" ] || fail "bundled runtime lib not copied"
+	[ ! -e "$ROOT/root/usr/lib/nya/bundled/CMakeCache.txt" ] || fail "CMakeCache.txt junk should be filtered"
+	[ ! -e "$ROOT/root/usr/lib/nya/bundled/compile_commands.json" ] || fail "compile_commands.json junk should be filtered"
+	[ ! -e "$ROOT/root/usr/lib/nya/bundled/Makefile" ] || fail "Makefile junk should be filtered"
+	ok "host bundle fallback"
+
+	echo "== host install (single file) + host remove =="
+	env $HHOME $NYA $HCFG host install simple --noconfirm || fail "host install simple"
+	[ -f "$ROOT/root/usr/bin/simple" ] && [ ! -L "$ROOT/root/usr/bin/simple" ] || fail "simple should be a regular file in /usr/bin"
+	$NYA $HCFG host remove simple --noconfirm || fail "host remove simple"
+	[ ! -e "$ROOT/root/usr/bin/simple" ] || fail "simple not removed"
+	$NYA $HCFG -Q | grep -q "simple" && fail "simple still in local db after remove"
+	ok "host single-file + remove"
+
+	echo "== host reinstall (upgrade path) =="
+	env $HHOME $NYA $HCFG host install hostapp --noconfirm 2>&1 | grep -q "upgrading hostapp" || fail "reinstall should print upgrading"
+	[ -x "$ROOT/root/usr/bin/hostapp" ] || fail "hostapp missing after reinstall"
+	ok "host reinstall"
+
+	echo "== host install with [app] (application menu + icons) =="
+	mkdir -p "$ROOT/host-src/gapp" "$ROOT/host-src/gapp/build" "$ROOT/host-src/gapp/packaging/icons/hicolor/64x64/apps" "$ROOT/host-src/gapp/packaging/icons/hicolor/128x128/apps"
+	cat > "$ROOT/host-src/gapp/Makefile" <<'EOF'
+build:
+	@mkdir -p build && printf '#!/bin/sh\necho gapp\n' > build/gapp && chmod +x build/gapp && printf 'lib' > build/libgapp.so
+EOF
+	printf '[Desktop Entry]\nType=Application\nName=Gapp\nExec=gapp\nIcon=gapp\nCategories=Utility;\n' > "$ROOT/host-src/gapp/packaging/gapp.desktop"
+	printf 'PNG64' > "$ROOT/host-src/gapp/packaging/icons/hicolor/64x64/apps/gapp.png"
+	printf 'PNG128' > "$ROOT/host-src/gapp/packaging/icons/hicolor/128x128/apps/gapp.png"
+	( cd "$ROOT/host-src/gapp" && git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+	cat > "$ROOT/host-repo/gapp" <<EOF
+[repo]
+file://$ROOT/host-src/gapp
+
+[folder]
+gapp
+
+[instructions]
+make build
+
+[binary]
+./build/gapp
+
+[app]
+./packaging
+EOF
+	env $HHOME $NYA $HCFG host install gapp --noconfirm || fail "host install gapp"
+	[ -L "$ROOT/root/usr/share/applications/gapp.desktop" ] || fail "gapp.desktop not linked into the application menu"
+	[ -f "$ROOT/root/usr/lib/nya/gapp/gapp.desktop" ] || fail "gapp.desktop not merged into the bundle"
+	[ -f "$ROOT/root/usr/share/icons/hicolor/64x64/apps/gapp.png" ] || fail "gapp 64x64 icon not installed"
+	[ -f "$ROOT/root/usr/share/icons/hicolor/128x128/apps/gapp.png" ] || fail "gapp 128x128 icon not installed"
+	env $HHOME $NYA $HCFG remove gapp --noconfirm || fail "remove gapp"
+	[ ! -e "$ROOT/root/usr/share/applications/gapp.desktop" ] || fail "gapp.desktop not removed"
+	[ ! -e "$ROOT/root/usr/share/icons/hicolor/64x64/apps/gapp.png" ] || fail "gapp icon not removed"
+	[ ! -e "$ROOT/root/usr/lib/nya/gapp" ] || fail "gapp bundle not removed"
+	ok "host [app] menu + icons"
+
+	echo "== host auto logo install (no [app]) =="
+	mkdir -p "$ROOT/host-src/plain/build" "$ROOT/host-src/plain/icons"
+	cat > "$ROOT/host-src/plain/Makefile" <<'EOF'
+build:
+	@mkdir -p build && printf '#!/bin/sh\necho plain\n' > build/plain && chmod +x build/plain && printf 'lib' > build/libplain.so
+EOF
+	printf 'ROOTLOGO' > "$ROOT/host-src/plain/logo.png"
+	printf 'SVGLOGO' > "$ROOT/host-src/plain/icons/plain.svg"
+	( cd "$ROOT/host-src/plain" && git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+	cat > "$ROOT/host-repo/plain" <<EOF
+[repo]
+file://$ROOT/host-src/plain
+
+[folder]
+plain
+
+[instructions]
+make build
+
+[binary]
+./build/plain
+EOF
+	env $HHOME $NYA $HCFG host install plain --noconfirm || fail "host install plain"
+	[ -f "$ROOT/root/usr/share/icons/hicolor/256x256/apps/logo.png" ] || fail "auto logo.png not installed"
+	[ -f "$ROOT/root/usr/share/icons/hicolor/scalable/apps/plain.svg" ] || fail "auto icons/plain.svg not installed"
+	env $HHOME $NYA $HCFG remove plain --noconfirm || fail "remove plain"
+	[ ! -e "$ROOT/root/usr/share/icons/hicolor/256x256/apps/logo.png" ] || fail "auto logo not removed"
+	[ ! -e "$ROOT/root/usr/share/icons/hicolor/scalable/apps/plain.svg" ] || fail "auto svg not removed"
+	ok "host auto logo install"
+
+	echo "== install fallback order (repos -> hosts -> aur -> flatpak) =="
+	cat > "$ROOT/fallback1.conf" <<EOF
+[options]
+RootDir = $ROOT/root
+DBPath = var/lib/pacman
+CacheDir = var/cache/pacman/pkg
+LogFile = $ROOT/nya.log
+aur = true
+hostsrepo = $ROOT/host-repo
+EOF
+	# hostapp is in the hosts repo but not in any pacman repo: default order installs from hosts, aur is never consulted
+	env $HHOME $NYA --config $ROOT/fallback1.conf install hostapp --noconfirm 2>&1 | grep -qE "upgrading hostapp|hostapp installed" || fail "install should fall back to hosts"
+	[ -x "$ROOT/root/usr/bin/hostapp" ] || fail "hostapp missing after hosts fallback"
+	ok "install fallback hosts before aur"
+
+	echo "== install fallback with aurfirst = true =="
+	cat > "$ROOT/fallback2.conf" <<EOF
+[options]
+RootDir = $ROOT/root
+DBPath = var/lib/pacman
+CacheDir = var/cache/pacman/pkg
+LogFile = $ROOT/nya.log
+aur = false
+aurfirst = true
+hostsrepo = $ROOT/host-repo
+EOF
+	# aur is disabled so it is skipped; hosts still resolves the target in aur-first mode
+	env $HHOME $NYA --config $ROOT/fallback2.conf install bundled --noconfirm 2>&1 | grep -qE "upgrading bundled|bundled installed" || fail "install should fall back to hosts with aurfirst"
+	[ -L "$ROOT/root/usr/bin/bundled" ] || fail "bundled missing after hosts fallback (aurfirst)"
+	ok "install fallback with aurfirst"
+
 	echo
 echo "ALL TESTS PASSED"

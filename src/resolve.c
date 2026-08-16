@@ -207,11 +207,18 @@ int txn_build_install(config *c, const char **targets, int ntargets, txn *t, str
 					depspec_free(&dep);
 					continue;
 				}
-				if (c->aur) {
-					if (aur_build_install(c, dep.name, t) == 0) {
-						depspec_free(&dep);
-						continue;
-					}
+				/* not in any repo: fall back to nya-hosts and/or the AUR (configurable order) */
+				int done = 0;
+				if (c->aurfirst) {
+					if (c->aur && aur_build_install(c, dep.name, t) == 0) done = 1;
+					else if (host_try_install(c, dep.name) == 0) done = 1;
+				} else {
+					if (host_try_install(c, dep.name) == 0) done = 1;
+					else if (c->aur && aur_build_install(c, dep.name, t) == 0) done = 1;
+				}
+				if (done) {
+					depspec_free(&dep);
+					continue;
 				}
 				if (notfound) {
 					strs_add(notfound, dep.name);

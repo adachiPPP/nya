@@ -21,6 +21,7 @@ void config_free(config *c) {
 	free(c->nixchannel);
 	free(c->aurbase);
 	free(c->sudobin);
+	free(c->hostsrepo);
 	strs_free(&c->cachedirs);
 	strs_free(&c->holdpkg);
 	strs_free(&c->ignorepkg);
@@ -43,6 +44,7 @@ config *config_alloc(void) {
 	c->nixchannel = xstrdup("nixpkgs-unstable");
 	c->aurbase = xstrdup("https://aur.archlinux.org");
 	c->sudobin = xstrdup("sudo");
+	c->hostsrepo = xstrdup("https://adachippp.github.io/nya-hosts");
 	c->parallel = 5;
 	c->color = 1;
 	c->searchaur = c->searchnix = c->searchflatpak = -1;
@@ -115,18 +117,23 @@ static void config_apply_key(config *c, repo *r, const char *key, const char *va
 			c->searchaur = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
 		} else if (str_ieq(key, "searchnix")) {
 			c->searchnix = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
-		} else if (str_ieq(key, "searchflatpak")) {
-			c->searchflatpak = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
-		} else if (str_ieq(key, "NixChannel")) {
+	} else if (str_ieq(key, "searchflatpak")) {
+		c->searchflatpak = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
+	} else if (str_ieq(key, "aurfirst")) {
+		c->aurfirst = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
+	} else if (str_ieq(key, "NixChannel")) {
 			free(c->nixchannel);
 			c->nixchannel = xstrdup(val);
 		} else if (str_ieq(key, "AurBase")) {
 			free(c->aurbase);
 			c->aurbase = xstrdup(val);
-		} else if (str_ieq(key, "sudobin")) {
-			free(c->sudobin);
-			c->sudobin = xstrdup(val);
-		} else if (str_ieq(key, "NyaCacheDir")) {
+	} else if (str_ieq(key, "sudobin")) {
+		free(c->sudobin);
+		c->sudobin = xstrdup(val);
+	} else if (str_ieq(key, "hostsrepo")) {
+		free(c->hostsrepo);
+		c->hostsrepo = xstrdup(val);
+	} else if (str_ieq(key, "NyaCacheDir")) {
 			free(c->nyacache);
 			c->nyacache = xstrdup(val);
 		}
@@ -384,6 +391,9 @@ static void write_options(FILE *f, config *c, int from_pac) {
 	fprintf(f, "#searchnix = true\n");
 	fprintf(f, "#searchflatpak = true\n");
 	fprintf(f, "#sudobin = sudo\n");
+	fprintf(f, "#hostsrepo = https://adachippp.github.io/nya-hosts\n");
+	fprintf(f, "#install priority: repos -> hosts -> aur -> flatpak (set 'aurfirst = true' for aur -> hosts)\n");
+	fprintf(f, "#aurfirst = true\n");
 	(void)from_pac;
 }
 
