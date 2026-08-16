@@ -7,9 +7,11 @@ call pacman — every operation (database parsing, dependency resolution,
 download, extraction, scriptlets, hooks, removal) is implemented natively.
 
 ## Info
-the package manager can automatically find packages **IF ENABLED IN THE CONFIG** from flatpak aur and pacman.
+the package manager can automatically find packages **IF ENABLED IN THE CONFIG** from flatpak, aur, hosts, and pacman.
 
-the priority = **pacman** -> **hosts** <-> **aur** -> **flatpak**
+the install priority = **pacman** -> **hosts** <-> **aur** -> **flatpak**
+(hosts and aur are swappable: set `aurfirst = true` in `[options]` for
+pacman -> aur -> hosts -> flatpak)
 
 *Note: you can search nix packages but the whole purpose of nix is being configured from flakes so you can use nya to search for nix packages not to install them*
 
@@ -53,6 +55,12 @@ ParallelDownloads = 5
 Color
 #aur = true
 #nix = true
+#searchaur = true
+#searchnix = true
+#searchflatpak = true
+#sudobin = sudo        # auto-elevation binary (sudo or doas)
+#hostsrepo = https://adachippp.github.io/nya-hosts
+#aurfirst = true       # install fallback: repos -> aur -> hosts -> flatpak
 
 [core]
 Include = /etc/pacman.d/mirrorlist
@@ -101,6 +109,10 @@ common options: `--noconfirm`, `--needed`, `--asdeps`, `--overwrite`,
 `--ignoregroup=grp`, `--config <path>`, `--color`/`--nocolor`, `--verbose`,
 `--quiet`.
 
+root-requiring operations (`install`, `remove`, `update`, ...) automatically
+re-run themselves through `sudobin` (default `sudo`, set `sudobin = doas` in
+`[options]`) when run as a normal user, just like yay.
+
 ## pacman compatibility
 
 - **local database** (`/var/lib/pacman/local/<name>-<version>/`): writes
@@ -132,7 +144,7 @@ Enable with `aur = true` in `[options]`, then:
 nya aur search firefox
 nya aur info yay
 sudo nya aur install yay
-sudo nya install <aur-only-name>   # falls back to AUR when not in repos
+sudo nya install <aur-only-name>   # falls back through hosts then AUR when not in repos
 ```
 
 AUR packages are built with `makepkg` (install `base-devel`) and the resulting
@@ -162,7 +174,65 @@ nya -fp list
 nya -fp update
 ```
 
-these shell out to the `flatpak` CLI (requires flatpak installed).
+these shell out to the `flatpak` CLI (requires flatpak installed). `nya
+install` and `nya remove` also fall back to flatpak for app IDs that aren't in
+any repo, host, or the AUR, and `nya update` runs `flatpak update` at the end.
+
+## nya-hosts
+
+hosts are build-from-source recipes hosted in a git repo (default
+`https://adachippp.github.io/nya-hosts`, change it with
+`hostsrepo = <url-or-dir>` in `[options]`):
+
+```sh
+sudo nya host install mocktail      # fetch recipe, clone, build, install
+sudo nya host remove mocktail       # remove everything it installed
+```
+
+a recipe file is named after the package and looks like:
+
+```ini
+[repo]
+https://github.com/komaruworld/mocktail.git
+
+[folder]
+mocktail
+
+[instructions]
+make build
+
+[binary]
+./build/mocktail
+
+[version]
+1.0.0
+
+[desc]
+Play Roblox on Linux
+
+[app]
+./packaging
+```
+
+- `[repo]` is required; everything else is optional.
+- nya clones into `~/.cache/nya/hosts-build/<name>/`, runs `[instructions]`, and
+  picks the best install strategy automatically:
+  - **project install rules**: if the project has `make install` or a CMake build
+    dir, nya stages it with `DESTDIR` and merges the result (like a PKGBUILD);
+  - **bundle**: if the binary sits next to shared libraries or helpers, the
+    whole folder goes to `/usr/lib/nya/<name>/` with a symlink in `/usr/bin`;
+  - **single file**: plain binaries are copied straight to `/usr/bin`;
+  - with no `[binary]`, the executable is auto-detected in common build dirs.
+- the app's **logo** is installed into `/usr/share/icons/hicolor/` automatically
+  (files named `logo.*`/`icon.*` or after the app, or images inside
+  `icons/`/`logo/`/`branding/` folders).
+- `[app]` links the app's `.desktop` file into `/usr/share/applications/` and
+  installs its icons, so it shows up in the application menu.
+- hosts packages are tracked in the local database, so `nya remove <name>` (or
+  `pacman -R`) cleans them up completely, and re-installing prints an upgrade.
+
+`nya install <name>` also falls back to nya-hosts (after repos, before AUR)
+when a package isn't found anywhere else.
 
 ## Tests
 
