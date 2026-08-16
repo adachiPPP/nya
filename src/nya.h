@@ -241,6 +241,7 @@ typedef struct pkg {
 	strs files;
 	int reason;
 	int is_local;
+	int is_host;
 	int has_mtree;
 	int is_upgrade;
 	int is_reinstall;

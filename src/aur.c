@@ -511,6 +511,7 @@ int aur_update(config *c, txn *t) {
 	for (i = 0; i < g_nlocal; i++) {
 		pkg *l = g_local[i];
 		if (!l->name) continue;
+		if (l->is_host) continue;
 		if (db_find_sync(l->name)) continue;
 		strs_add(&foreign, l->name);
 	}

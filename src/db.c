@@ -310,6 +310,8 @@ int db_load_local(config *c) {
 		}
 		desc_into_pkg(p, data);
 		free(data);
+		snprintf(path, sizeof path, "%s/nya-host", entry);
+		if (is_file(path)) p->is_host = 1;
 		snprintf(path, sizeof path, "%s/files", entry);
 		data = read_file(path, NULL);
 		if (data) {

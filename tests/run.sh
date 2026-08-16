@@ -648,6 +648,25 @@ EOF
 	[ ! -e "$ROOT/root/usr/share/icons/hicolor/scalable/apps/plain.svg" ] || fail "auto svg not removed"
 	ok "host auto logo install"
 
+	echo "== host packages excluded from AUR updates =="
+	[ -f "$ROOT/root/var/lib/pacman/local/hostapp-1/nya-host" ] || fail "host marker missing in local db"
+	[ -f "$ROOT/root/var/lib/pacman/local/bundled-1/nya-host" ] || fail "bundled host marker missing in local db"
+	cat > "$ROOT/hostauth.conf" <<EOF
+[options]
+RootDir = $ROOT/root
+DBPath = var/lib/pacman
+CacheDir = var/cache/pacman/pkg
+LogFile = $ROOT/nya.log
+aur = true
+hostsrepo = $ROOT/host-repo
+
+[extra]
+Server = file://$REPO
+EOF
+	upout=$(env $HHOME $NYA --config $ROOT/hostauth.conf update --noconfirm 2>&1) || fail "update with host packages installed"
+	echo "$upout" | grep -q "checking for AUR updates" && fail "host packages should not be checked against the AUR"
+	ok "host excluded from AUR update"
+
 	echo "== install fallback order (repos -> hosts -> aur -> flatpak) =="
 	cat > "$ROOT/fallback1.conf" <<EOF
 [options]

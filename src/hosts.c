@@ -975,6 +975,13 @@ static int host_do_install(config *c, const char *name, host_recipe *r) {
 		host_recipe_free(r);
 		return -1;
 	}
+	{
+		char mdir[4096], mpath[4600];
+		snprintf(mdir, sizeof mdir, "%s/local/%s-%s", c->dbpath, p->name, p->version);
+		snprintf(mpath, sizeof mpath, "%s/nya-host", mdir);
+		int mfd = open(mpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (mfd >= 0) close(mfd);
+	}
 	msg("%s installed (from %s)", name, r->repo);
 	free(g_local);
 	g_local = NULL;
