@@ -183,6 +183,7 @@ typedef struct config {
 	int searchaur;
 	int searchnix;
 	int searchflatpak;
+	int searchhost;
 	int aurfirst;
 	repo **repos;
 	int nrepos;
@@ -360,6 +361,8 @@ int fp_search(config *c, const char **terms, int n);
 int fp_update(config *c);
 int host_install(config *c, const char *name);
 int host_try_install(config *c, const char *name);
+int host_search(config *c, const char **terms, int n);
+int host_update(config *c, const char **names, int n);
 
 typedef struct json {
 	int type;

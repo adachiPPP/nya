@@ -47,7 +47,7 @@ config *config_alloc(void) {
 	c->hostsrepo = xstrdup("https://adachippp.github.io/nya-hosts");
 	c->parallel = 5;
 	c->color = 1;
-	c->searchaur = c->searchnix = c->searchflatpak = -1;
+	c->searchaur = c->searchnix = c->searchflatpak = c->searchhost = -1;
 	return c;
 }
 
@@ -119,6 +119,8 @@ static void config_apply_key(config *c, repo *r, const char *key, const char *va
 			c->searchnix = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
 	} else if (str_ieq(key, "searchflatpak")) {
 		c->searchflatpak = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
+	} else if (str_ieq(key, "searchhost")) {
+		c->searchhost = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
 	} else if (str_ieq(key, "aurfirst")) {
 		c->aurfirst = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
 	} else if (str_ieq(key, "NixChannel")) {
@@ -390,6 +392,7 @@ static void write_options(FILE *f, config *c, int from_pac) {
 	fprintf(f, "#searchaur = true\n");
 	fprintf(f, "#searchnix = true\n");
 	fprintf(f, "#searchflatpak = true\n");
+	fprintf(f, "#searchhost = true\n");
 	fprintf(f, "#sudobin = sudo\n");
 	fprintf(f, "#hostsrepo = https://adachippp.github.io/nya-hosts\n");
 	fprintf(f, "#install priority: repos -> hosts -> aur -> flatpak (set 'aurfirst = true' for aur -> hosts)\n");

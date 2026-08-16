@@ -27,7 +27,7 @@ static void print_help(void) {
 	printf("  nya remove <pkg>...           remove packages (same as -R)\n");
 	printf("  nya search <term>...          search repos + AUR/nix/flatpak when enabled (same as -Ss)\n");
 	printf("  nya sync                      synchronize package databases (same as -Sy)\n");
-	printf("  nya update                    full system upgrade (sync + pacman + AUR + flatpak)\n");
+	printf("  nya update                    full system upgrade (sync + pacman + AUR + hosts + flatpak)\n");
 	printf("  nya upgrade                   full system upgrade (same as update)\n");
 	printf("  nya info <pkg>...             show package info (same as -Si)\n");
 	printf("  nya list                      list installed packages (same as -Q)\n");
@@ -38,9 +38,9 @@ static void print_help(void) {
 	printf("  nya aur search|info|install <name>...   Arch User Repository (set 'aur = true')\n");
 	printf("  nya nix search|info|update <term>...    nixpkgs search via nix (set 'nix = true')\n");
 	printf("  nya -fp search|install|remove|list|update <app>...   flatpak integration\n");
-	printf("  nya host install|remove <name>...   build & install from nya-hosts git repos\n");
+	printf("  nya host install|remove|update <name>...   build & install/update from nya-hosts git repos\n");
 	printf("\ninstall fallback: repos -> hosts -> aur -> flatpak (set 'aurfirst = true' to swap hosts/aur)\n");
-	printf("search sources in 'nya search': searchaur = true, searchnix = true, searchflatpak = true\n");
+	printf("search sources in 'nya search': searchaur = true, searchnix = true, searchflatpak = true, searchhost = true\n");
 	printf("hosts repo: set 'hostsrepo = <url-or-dir>' in [options] (default: https://adachippp.github.io/nya-hosts)\n");
 	printf("root elevation: set 'sudobin = sudo' or 'sudobin = doas' in [options] (default: sudo)\n");
 	printf("  nya --read-paconfig [file]    import repositories from pacman.conf\n");
@@ -484,6 +484,7 @@ static void print_config(config *c) {
 	printf("ParallelDl    = %d\n", c->parallel);
 	printf("aur           = %s\n", c->aur ? "true" : "false");
 	printf("nix           = %s\n", c->nix ? "true" : "false");
+	printf("SearchHost    = %s\n", (c->searchhost >= 0 ? c->searchhost : 1) ? "true" : "false");
 	printf("HostsRepo     = %s\n", c->hostsrepo ? c->hostsrepo : "(none)");
 	printf("AurFirst      = %s\n", c->aurfirst ? "true" : "false");
 	for (i = 0; i < c->nrepos; i++) {
@@ -697,6 +698,9 @@ int cli_main(int argc, char **argv) {
 			}
 			rc = 0;
 			do_search(c, (const char **)cl.targets.v, cl.targets.n, 0);
+			if (c->searchhost >= 0 ? c->searchhost : 1) {
+				host_search(c, (const char **)cl.targets.v, cl.targets.n);
+			}
 			if (c->searchaur >= 0 ? c->searchaur : c->aur) {
 				aur_search_any(c, (const char **)cl.targets.v, cl.targets.n);
 			}
@@ -749,6 +753,7 @@ int cli_main(int argc, char **argv) {
 			} else {
 				rc = run_txn(c, &t, 2);
 			}
+			if (rc == 0) host_update(c, NULL, 0);
 			if (rc == 0) fp_update(c);
 			break;
 		}
@@ -939,7 +944,7 @@ int cli_main(int argc, char **argv) {
 	}
 	case 'H': {
 		if (!cl.word) {
-			error("host operation required: install|remove");
+			error("host operation required: install|remove|update");
 			rc = 1;
 			break;
 		}
@@ -952,6 +957,8 @@ int cli_main(int argc, char **argv) {
 			for (j = 0; j < cl.targets.n; j++) {
 				if (host_install(c, cl.targets.v[j]) != 0) rc = 1;
 			}
+		} else if (strcmp(cl.word, "update") == 0) {
+			rc = host_update(c, (const char **)cl.targets.v, cl.targets.n);
 		} else if (strcmp(cl.word, "remove") == 0) {
 			if (cl.targets.n == 0) {
 				error("no host specified");

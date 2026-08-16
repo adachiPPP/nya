@@ -9,6 +9,7 @@ typedef struct host_recipe {
 	char *version;
 	char *desc;
 	char *app;
+	char fp[65];
 } host_recipe;
 
 static void host_recipe_free(host_recipe *r) {
@@ -88,6 +89,7 @@ static int host_fetch_recipe(config *c, const char *name, host_recipe *r, int qu
 			if (!quiet) error("failed to read recipe for '%s'", name);
 			return -1;
 		}
+		sha256_buf(data, strlen(data), r->fp);
 		int rc = host_recipe_parse(data, r);
 		free(data);
 		if (rc != 0 && !quiet) error("invalid recipe for host '%s' (missing [repo])", name);
@@ -109,6 +111,7 @@ static int host_fetch_recipe(config *c, const char *name, host_recipe *r, int qu
 		if (!quiet) error("failed to read recipe for '%s'", name);
 		return -1;
 	}
+	sha256_buf(data, strlen(data), r->fp);
 	int rc = host_recipe_parse(data, r);
 	free(data);
 	if (rc != 0 && !quiet) error("invalid recipe for host '%s' (missing [repo])", name);
@@ -980,7 +983,10 @@ static int host_do_install(config *c, const char *name, host_recipe *r) {
 		snprintf(mdir, sizeof mdir, "%s/local/%s-%s", c->dbpath, p->name, p->version);
 		snprintf(mpath, sizeof mpath, "%s/nya-host", mdir);
 		int mfd = open(mpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-		if (mfd >= 0) close(mfd);
+		if (mfd >= 0) {
+			if (r->fp[0]) (void)write(mfd, r->fp, strlen(r->fp));
+			close(mfd);
+		}
 	}
 	msg("%s installed (from %s)", name, r->repo);
 	free(g_local);
@@ -1025,4 +1031,181 @@ int host_try_install(config *c, const char *name) {
 		return -1;
 	}
 	return host_do_install(c, name, &r);
+}
+
+int host_update(config *c, const char **names, int n) {
+	if (!c->hostsrepo || !*c->hostsrepo) return 0;
+	strs hosts;
+	memset(&hosts, 0, sizeof hosts);
+	int i;
+	if (n > 0) {
+		for (i = 0; i < n; i++) strs_add(&hosts, names[i]);
+	} else {
+		for (i = 0; i < g_nlocal; i++) {
+			pkg *l = g_local[i];
+			if (!l->name || !l->is_host) continue;
+			strs_add(&hosts, l->name);
+		}
+	}
+	if (hosts.n == 0) {
+		strs_free(&hosts);
+		return 0;
+	}
+	info("checking for nya-hosts updates for %d host package(s)", hosts.n);
+	int updated = 0;
+	int checked = 0;
+	for (i = 0; i < hosts.n; i++) {
+		const char *name = hosts.v[i];
+		pkg *l = db_find_local(name);
+		if (!l) continue;
+		host_recipe r;
+		memset(&r, 0, sizeof r);
+		if (host_fetch_recipe(c, name, &r, 1) != 0) {
+			warn("%s: failed to fetch current recipe", name);
+			continue;
+		}
+		if (!r.repo) {
+			host_recipe_free(&r);
+			continue;
+		}
+		checked++;
+		char stored[65] = "";
+		char mpath[4600];
+		snprintf(mpath, sizeof mpath, "%s/local/%s-%s/nya-host", c->dbpath, name, l->version ? l->version : "1");
+		char *s = read_file(mpath, NULL);
+		if (s) {
+			size_t sl = strlen(s);
+			while (sl > 0 && (s[sl - 1] == '\n' || s[sl - 1] == '\r')) s[--sl] = '\0';
+			snprintf(stored, sizeof stored, "%s", s);
+			free(s);
+		}
+		if (stored[0] && strcmp(stored, r.fp) == 0) {
+			host_recipe_free(&r);
+			continue;
+		}
+		info("upgrading host %s (recipe changed)", name);
+		if (host_do_install(c, name, &r) == 0) updated++;
+	}
+	strs_free(&hosts);
+	if (updated == 0 && checked > 0) msg("no host updates available");
+	return 0;
+}
+
+static void host_repo_slug(const char *url, char *out, size_t n) {
+	const char *p = url;
+	if (strncmp(p, "https://", 8) == 0) p += 8;
+	else if (strncmp(p, "http://", 7) == 0) p += 7;
+	size_t i, o = 0;
+	for (i = 0; p[i] && o < n - 1; i++) {
+		unsigned char ch = (unsigned char)p[i];
+		if (isalnum(ch) || ch == '-' || ch == '_' || ch == '.') out[o++] = (char)ch;
+		else if (o > 0 && out[o - 1] != '-') out[o++] = '-';
+	}
+	while (o > 0 && out[o - 1] == '-') o--;
+	out[o] = '\0';
+	if (o == 0) snprintf(out, n, "hosts");
+}
+
+static int host_search_dir(config *c, const char *root, const char **terms, int n) {
+	(void)c;
+	int hits = 0;
+	DIR *d = opendir(root);
+	if (!d) return 0;
+	struct dirent *de;
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.') continue;
+		char path[4600];
+		snprintf(path, sizeof path, "%s/%s", root, de->d_name);
+		struct stat st;
+		if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+		char *data = read_file(path, NULL);
+		if (!data) continue;
+		host_recipe r;
+		memset(&r, 0, sizeof r);
+		if (host_recipe_parse(data, &r) != 0) {
+			free(data);
+			continue;
+		}
+		free(data);
+		const char *name = de->d_name;
+		if (db_find_sync(name)) {
+			host_recipe_free(&r);
+			continue;
+		}
+		int matched = 1;
+		int j;
+		for (j = 0; j < n; j++) {
+			int m = strcasestr(name, terms[j]) != NULL ||
+			        (r.desc && strcasestr(r.desc, terms[j]) != NULL);
+			if (!m) {
+				matched = 0;
+				break;
+			}
+		}
+		if (!matched) {
+			host_recipe_free(&r);
+			continue;
+		}
+		const char *ver = (r.version && *r.version) ? r.version : "1";
+		int installed = db_find_local(name) != NULL;
+		printf("%shosts/%s %s%s%s%s%s\n", col_yellow(), name, col_reset(), col_bold(), ver, col_reset(),
+		       installed ? " [installed]" : "");
+		if (r.desc && *r.desc) printf("    %s\n", r.desc);
+		host_recipe_free(&r);
+		hits++;
+	}
+	closedir(d);
+	return hits;
+}
+
+int host_search(config *c, const char **terms, int n) {
+	if (n <= 0 || !c->hostsrepo || !*c->hostsrepo) return 0;
+	int hits;
+	if (is_dir(c->hostsrepo)) {
+		hits = host_search_dir(c, c->hostsrepo, terms, n);
+	} else {
+		const char *user = geteuid() == 0 ? invoking_user_name() : NULL;
+		const char *home = NULL;
+		if (user) {
+			struct passwd *pw = getpwnam(user);
+			if (pw && pw->pw_dir && *pw->pw_dir) home = pw->pw_dir;
+		}
+		if (!home) home = getenv("HOME");
+		char slug[256];
+		host_repo_slug(c->hostsrepo, slug, sizeof slug);
+		char cache[4400];
+		if (home && *home) snprintf(cache, sizeof cache, "%s/.cache/nya/hosts-search", home);
+		else snprintf(cache, sizeof cache, "/tmp/nya-hosts-search-%ld", (long)geteuid());
+		char root[4600];
+		snprintf(root, sizeof root, "%s/%s", cache, slug);
+		int refresh = 1;
+		struct stat st;
+		if (is_dir(root) && stat(root, &st) == 0 &&
+		    (long long)time(NULL) - (long long)st.st_mtime < 3600) {
+			refresh = 0;
+		}
+		if (refresh) {
+			rm_rf(root);
+			if (mkdir_p(cache, 0755) != 0) {
+				if (user) {
+					snprintf(cache, sizeof cache, "/tmp/nya-hosts-search-%ld", (long)geteuid());
+					snprintf(root, sizeof root, "%s/%s", cache, slug);
+				}
+				if (mkdir_p(cache, 0755) != 0) return 0;
+			}
+			if (user) {
+				struct passwd *pw = getpwnam(user);
+				if (pw) chown(cache, pw->pw_uid, pw->pw_gid);
+			}
+			char *gitav[] = { (char *)"git", (char *)"clone", (char *)"--depth", (char *)"1",
+			                  (char *)c->hostsrepo, (char *)root, NULL };
+			if (run_argv_as(user, NULL, gitav) != 0) {
+				warn("failed to fetch nya-hosts index (%s)", c->hostsrepo);
+				return 0;
+			}
+		}
+		hits = host_search_dir(c, root, terms, n);
+	}
+	if (hits == 0) msg("no hosts found matching the search terms");
+	return hits;
 }

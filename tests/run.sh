@@ -228,6 +228,7 @@ LogFile = $ROOT/nya.log
 Architecture = x86_64
 ParallelDownloads = 4
 Color
+searchhost = false
 
 [extra]
 Server = file://$REPO
@@ -442,6 +443,7 @@ Architecture = x86_64
 aur = false
 nix = false
 searchflatpak = true
+searchhost = false
 
 [extra]
 Server = file://$ROOT/repo
@@ -513,6 +515,9 @@ hostapp
 
 [instructions]
 make build
+
+[desc]
+An example host package for testing nya hosts
 EOF
 	cat > "$ROOT/host-repo/bundled" <<EOF
 [repo]
@@ -648,6 +653,24 @@ EOF
 	[ ! -e "$ROOT/root/usr/share/icons/hicolor/scalable/apps/plain.svg" ] || fail "auto svg not removed"
 	ok "host auto logo install"
 
+	echo "== host search (searchhost = true) =="
+	cat > "$ROOT/hostsearch.conf" <<EOF
+[options]
+RootDir = $ROOT/root
+DBPath = var/lib/pacman
+CacheDir = var/cache/pacman/pkg
+LogFile = $ROOT/nya.log
+searchhost = true
+hostsrepo = $ROOT/host-repo
+EOF
+	# hostapp is already installed from the earlier fallback test; search should still list hosts entries
+	env $HHOME $NYA --config $ROOT/hostsearch.conf search hostapp 2>&1 | grep -q "hosts/hostapp 1" || fail "host search hostapp"
+	env $HHOME $NYA --config $ROOT/hostsearch.conf search hostapp 2>&1 | grep -q "An example host package" || fail "host search shows desc"
+	env $HHOME $NYA --config $ROOT/hostsearch.conf search hostapp 2>&1 | grep -q "\[installed\]" || fail "host search should mark installed packages"
+	env $HHOME $NYA --config $ROOT/hostsearch.conf search host example 2>&1 | grep -q "hosts/hostapp" || fail "host search AND terms"
+	env $HHOME $NYA --config $ROOT/hostsearch.conf search host nope 2>&1 | grep -q "hosts/hostapp" && fail "host search should require all terms"
+	ok "host search"
+
 	echo "== host packages excluded from AUR updates =="
 	[ -f "$ROOT/root/var/lib/pacman/local/hostapp-1/nya-host" ] || fail "host marker missing in local db"
 	[ -f "$ROOT/root/var/lib/pacman/local/bundled-1/nya-host" ] || fail "bundled host marker missing in local db"
@@ -697,6 +720,46 @@ EOF
 	env $HHOME $NYA --config $ROOT/fallback2.conf install bundled --noconfirm 2>&1 | grep -qE "upgrading bundled|bundled installed" || fail "install should fall back to hosts with aurfirst"
 	[ -L "$ROOT/root/usr/bin/bundled" ] || fail "bundled missing after hosts fallback (aurfirst)"
 	ok "install fallback with aurfirst"
+
+	echo "== host update (recipe change detection) =="
+	cat > "$ROOT/hostup.conf" <<EOF
+[options]
+RootDir = $ROOT/root
+DBPath = var/lib/pacman
+CacheDir = var/cache/pacman/pkg
+LogFile = $ROOT/nya.log
+hostsrepo = $ROOT/host-repo
+
+[extra]
+Server = file://$REPO
+EOF
+	# hostapp is installed at version 1 from the earlier fallback test; bump its recipe
+	cat > "$ROOT/host-repo/hostapp" <<EOF
+[repo]
+file://$ROOT/host-src/hostapp
+
+[folder]
+hostapp
+
+[instructions]
+make build
+
+[desc]
+An example host package for testing nya hosts
+
+[version]
+2
+EOF
+	upout=$(env $HHOME $NYA --config $ROOT/hostup.conf host update 2>&1) || fail "host update"
+	echo "$upout" | grep -q "upgrading host hostapp" || fail "host update should rebuild changed recipe"
+	env $HHOME $NYA --config $ROOT/hostup.conf -Q 2>&1 | grep -q "hostapp 2" || fail "hostapp should be version 2 after update"
+	# unchanged recipe -> no rebuild on second run
+	upout2=$(env $HHOME $NYA --config $ROOT/hostup.conf host update 2>&1) || fail "second host update"
+	echo "$upout2" | grep -q "no host updates available" || fail "unchanged host should not rebuild"
+	# nya update integrates hosts too
+	upout3=$(env $HHOME $NYA --config $ROOT/hostup.conf update --noconfirm 2>&1) || fail "nya update with hosts"
+	echo "$upout3" | grep -q "checking for nya-hosts updates" || fail "nya update should check hosts"
+	ok "host update"
 
 	echo
 echo "ALL TESTS PASSED"
