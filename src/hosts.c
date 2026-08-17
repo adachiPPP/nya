@@ -9,6 +9,7 @@ typedef struct host_recipe {
 	char *version;
 	char *desc;
 	char *app;
+	strs dependencies;
 	char fp[65];
 } host_recipe;
 
@@ -20,6 +21,7 @@ static void host_recipe_free(host_recipe *r) {
 	free(r->desc);
 	free(r->app);
 	strs_free(&r->instructions);
+	strs_free(&r->dependencies);
 	memset(r, 0, sizeof *r);
 }
 
@@ -44,6 +46,8 @@ static void host_recipe_set(host_recipe *r, const char *sec, const char *line) {
 	} else if (strcmp(sec, "app") == 0) {
 		free(r->app);
 		r->app = xstrdup(line);
+	} else if (strcmp(sec, "dependencies") == 0) {
+		if (*line) strs_add(&r->dependencies, line);
 	}
 }
 
@@ -72,14 +76,125 @@ static int host_recipe_parse(const char *data, host_recipe *r) {
 	return r->repo ? 0 : -1;
 }
 
+typedef struct host_entry {
+	char *name;
+	char *file;
+	char *desc;
+	char *version;
+} host_entry;
+
+static void host_entries_free(host_entry *e, int n) {
+	if (!e) return;
+	int i;
+	for (i = 0; i < n; i++) {
+		free(e[i].name);
+		free(e[i].file);
+		free(e[i].desc);
+		free(e[i].version);
+	}
+	free(e);
+}
+
+static int host_index_parse(const char *data, host_entry **out, int *nout) {
+	char *copy = xstrdup(data);
+	char *line = copy;
+	char *sec = NULL;
+	host_entry *entries = NULL;
+	int n = 0;
+	while (line && *line) {
+		char *nl = strchr(line, '\n');
+		if (nl) *nl = '\0';
+		char *s = trim(line);
+		if (*s && *s != '#') {
+			if (*s == '[') {
+				char *end = strchr(s + 1, ']');
+				if (end) {
+					*end = '\0';
+					sec = trim(s + 1);
+					entries = xrealloc(entries, (n + 1) * sizeof *entries);
+					memset(&entries[n], 0, sizeof entries[n]);
+					entries[n].name = xstrdup(sec);
+					n++;
+				}
+			} else if (sec) {
+				char *eq = strchr(s, '=');
+				if (eq) {
+					*eq = '\0';
+					char *k = trim(s);
+					char *v = trim(eq + 1);
+					host_entry *e = &entries[n - 1];
+					if (str_ieq(k, "file")) {
+						free(e->file);
+						e->file = xstrdup(v);
+					} else if (str_ieq(k, "desc")) {
+						free(e->desc);
+						e->desc = xstrdup(v);
+					} else if (str_ieq(k, "version")) {
+						free(e->version);
+						e->version = xstrdup(v);
+					}
+				}
+			}
+		}
+		line = nl ? nl + 1 : NULL;
+	}
+	free(copy);
+	*out = entries;
+	*nout = n;
+	return n > 0 ? 0 : -1;
+}
+
+static int host_index_load(config *c, host_entry **out, int *nout) {
+	*out = NULL;
+	*nout = 0;
+	if (!c->hostsrepo || !*c->hostsrepo) return -1;
+	char *data = NULL;
+	if (is_dir(c->hostsrepo)) {
+		char p[4600];
+		snprintf(p, sizeof p, "%s/packages.info", c->hostsrepo);
+		if (!is_file(p)) return -1;
+		data = read_file(p, NULL);
+	} else {
+		char url[4600];
+		snprintf(url, sizeof url, "%s/packages.info", c->hostsrepo);
+		long len = 0;
+		if (dl_url(c, url, &data, &len) != 0) return -1;
+	}
+	if (!data) return -1;
+	int rc = host_index_parse(data, out, nout);
+	free(data);
+	return rc;
+}
+
+static const char *host_index_file(host_entry *e, int n, const char *name) {
+	int i;
+	for (i = 0; i < n; i++) {
+		if (e[i].name && strcmp(e[i].name, name) == 0 && e[i].file) return e[i].file;
+	}
+	return NULL;
+}
+
 static int host_fetch_recipe(config *c, const char *name, host_recipe *r, int quiet) {
 	if (!c->hostsrepo || !*c->hostsrepo) {
 		if (!quiet) error("no hosts repo configured (set 'hostsrepo = <url>' in %s)", c->path);
 		return -1;
 	}
+	/* resolve the recipe filename through packages.info when present */
+	char fbuf[512];
+	const char *fname = name;
+	host_entry *idx = NULL;
+	int nidx = 0;
+	if (host_index_load(c, &idx, &nidx) == 0) {
+		const char *f = host_index_file(idx, nidx, name);
+		if (f) {
+			snprintf(fbuf, sizeof fbuf, "%s", f);
+			fname = fbuf;
+		}
+	}
+	host_entries_free(idx, nidx);
 	if (is_dir(c->hostsrepo)) {
 		char path[4600];
-		snprintf(path, sizeof path, "%s/%s", c->hostsrepo, name);
+		snprintf(path, sizeof path, "%s/%s", c->hostsrepo, fname);
 		if (!is_file(path)) {
 			if (!quiet) error("host '%s' not found in %s", name, c->hostsrepo);
 			return -1;
@@ -96,7 +211,7 @@ static int host_fetch_recipe(config *c, const char *name, host_recipe *r, int qu
 		return rc;
 	}
 	char url[4600];
-	snprintf(url, sizeof url, "%s/%s", c->hostsrepo, name);
+	snprintf(url, sizeof url, "%s/%s", c->hostsrepo, fname);
 	char tmp[4400];
 	snprintf(tmp, sizeof tmp, "/tmp/nya-host-%ld-%s", (long)getpid(), name);
 	if (!quiet) info("Fetching recipe for %s...", name);
@@ -188,6 +303,42 @@ static char *shq(const char *s) {
 	}
 	*p++ = '\'';
 	*p = '\0';
+	return out;
+}
+
+/* replace the literal $SUDOBIN token with the configured sudobin (sudo/doas),
+ * shell-quoted so the value is safe to embed in the instruction script */
+static char *expand_sudobin(const char *line, const char *sudobin) {
+	const char *tok = "$SUDOBIN";
+	size_t tokl = strlen(tok);
+	char *q = shq(sudobin);
+	size_t ql = strlen(q);
+	int occ = 0;
+	const char *p = line;
+	while ((p = strstr(p, tok)) != NULL) {
+		occ++;
+		p += tokl;
+	}
+	if (occ == 0) {
+		free(q);
+		return xstrdup(line);
+	}
+	size_t n = strlen(line) + (size_t)occ * (ql - tokl) + 1;
+	char *out = xmalloc(n);
+	char *w = out;
+	p = line;
+	const char *prev = line;
+	while ((p = strstr(p, tok)) != NULL) {
+		size_t pre = (size_t)(p - prev);
+		memcpy(w, prev, pre);
+		w += pre;
+		memcpy(w, q, ql);
+		w += ql;
+		p += tokl;
+		prev = p;
+	}
+	strcpy(w, prev);
+	free(q);
 	return out;
 }
 
@@ -751,7 +902,51 @@ static void host_uninstall_local(config *c, pkg *p) {
 	db_remove_local(c, p->name, p->version);
 }
 
-static int host_do_install(config *c, const char *name, host_recipe *r) {
+/* install a host's [dependencies] through the normal chain (repos -> hosts -> aur),
+ * resolving each one the same way 'nya install' would. returns 0 when all deps are
+ * installed or already satisfied. */
+static int host_install_deps(config *c, const char *name, host_recipe *r) {
+	int i;
+	for (i = 0; i < r->dependencies.n; i++) {
+		const char *dep = r->dependencies.v[i];
+		if (!*dep || *dep == '#') continue;
+		if (db_find_local(dep)) continue;
+		info("Installing dependency %s for host %s...", dep, name);
+		txn t;
+		txn_init(&t, c);
+		strs notfound;
+		memset(&notfound, 0, sizeof notfound);
+		const char *one = dep;
+		if (txn_build_install(c, &one, 1, &t, &notfound) != 0 || notfound.n > 0) {
+			txn_free(&t);
+			strs_free(&notfound);
+			error("unable to satisfy host dependency '%s' required by %s", dep, name);
+			return -1;
+		}
+		strs_free(&notfound);
+		if (t.nadd == 0) {
+			txn_free(&t);
+			continue;
+		}
+		/* mark the direct dependency itself as a dependency so -Qd/-Rs treat it right */
+		int k;
+		for (k = 0; k < t.nadd; k++) {
+			if (!t.add[k]->is_dep && t.add[k]->name && strcmp(t.add[k]->name, dep) == 0) {
+				t.add[k]->is_dep = 1;
+				t.add[k]->reason = 1;
+			}
+		}
+		if (txn_run(c, &t, 0) != 0) {
+			error("failed to install host dependency '%s' for %s", dep, name);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static strs g_host_stack;
+
+static int host_do_install_inner(config *c, const char *name, host_recipe *r) {
 	char folder[512];
 	if (r->folder) snprintf(folder, sizeof folder, "%s", r->folder);
 	else folder_from_url(r->repo, folder, sizeof folder);
@@ -766,6 +961,11 @@ static int host_do_install(config *c, const char *name, host_recipe *r) {
 	const char *buser = root ? invoking_user_name() : NULL;
 	if (root && !buser) {
 		error("cannot run host builds as root; run 'nya host install %s' without sudo/doas", name);
+		host_recipe_free(r);
+		return -1;
+	}
+
+	if (r->dependencies.n > 0 && host_install_deps(c, name, r) != 0) {
 		host_recipe_free(r);
 		return -1;
 	}
@@ -817,7 +1017,11 @@ static int host_do_install(config *c, const char *name, host_recipe *r) {
 		snprintf(cdline, sizeof cdline, "cd '%s'", folder);
 		strs_add(&cmd, cdline);
 		int i;
-		for (i = 0; i < r->instructions.n; i++) strs_add(&cmd, r->instructions.v[i]);
+		for (i = 0; i < r->instructions.n; i++) {
+			char *exp = expand_sudobin(r->instructions.v[i], c->sudobin ? c->sudobin : "sudo");
+			strs_add(&cmd, exp);
+			free(exp);
+		}
 		long total = 1;
 		for (i = 0; i < cmd.n; i++) total += strlen(cmd.v[i]) + 1;
 		char *script = xmalloc(total);
@@ -1001,6 +1205,30 @@ static int host_do_install(config *c, const char *name, host_recipe *r) {
 	return 0;
 }
 
+/* entry point for host installs: keeps a recursion stack so host->host
+ * [dependencies] cannot loop forever on circular recipes */
+static int host_do_install(config *c, const char *name, host_recipe *r) {
+	int i;
+	for (i = 0; i < g_host_stack.n; i++) {
+		if (strcmp(g_host_stack.v[i], name) == 0) {
+			error("circular host dependency detected involving '%s'", name);
+			host_recipe_free(r);
+			return -1;
+		}
+	}
+	strs_add(&g_host_stack, name);
+	int rc = host_do_install_inner(c, name, r);
+	for (i = g_host_stack.n - 1; i >= 0; i--) {
+		if (strcmp(g_host_stack.v[i], name) == 0) {
+			free(g_host_stack.v[i]);
+			g_host_stack.v[i] = g_host_stack.v[g_host_stack.n - 1];
+			g_host_stack.n--;
+			break;
+		}
+	}
+	return rc;
+}
+
 int host_install(config *c, const char *name) {
 	if (!host_name_ok(name)) {
 		error("invalid host name '%s'", name);
@@ -1106,6 +1334,65 @@ static void host_repo_slug(const char *url, char *out, size_t n) {
 	if (o == 0) snprintf(out, n, "hosts");
 }
 
+static int host_search_index(config *c, host_entry *e, int n, const char **terms, int nt) {
+	int hits = 0;
+	int i;
+	for (i = 0; i < n; i++) {
+		if (!e[i].name || !*e[i].name) continue;
+		if (db_find_sync(e[i].name)) continue;
+		int matched = 1;
+		int j;
+		for (j = 0; j < nt; j++) {
+			int m = strcasestr(e[i].name, terms[j]) != NULL ||
+			        (e[i].desc && strcasestr(e[i].desc, terms[j]) != NULL);
+			if (!m) {
+				matched = 0;
+				break;
+			}
+		}
+		if (!matched) continue;
+		const char *ver = (e[i].version && *e[i].version) ? e[i].version : "1";
+		int installed = db_find_local(e[i].name) != NULL;
+		printf("%shosts/%s %s%s%s%s%s\n", col_yellow(), e[i].name, col_reset(), col_bold(), ver, col_reset(),
+		       installed ? " [installed]" : "");
+		if (e[i].desc && *e[i].desc) printf("    %s\n", e[i].desc);
+		hits++;
+	}
+	return hits;
+}
+
+static void host_git_url(const char *url, char *out, size_t n) {
+	/* GitHub Pages URLs (https://<user>.github.io/<repo>) serve the site, not the
+	 * git repo: rewrite them to https://github.com/<user>/<repo>.git so the
+	 * search index can be cloned. Everything else is passed through unchanged. */
+	const char *p = url;
+	const char *scheme = NULL;
+	if (strncmp(p, "https://", 8) == 0) {
+		scheme = "https://";
+		p += 8;
+	} else if (strncmp(p, "http://", 7) == 0) {
+		scheme = "http://";
+		p += 7;
+	}
+	const char *dot = strstr(p, ".github.io");
+	if (scheme && dot && dot > p) {
+		size_t userlen = (size_t)(dot - p);
+		const char *rest = dot + 10; /* past ".github.io" */
+		const char *slash = strchr(rest, '/');
+		if (slash && slash[1]) {
+			const char *repo = slash + 1;
+			size_t repolen = strlen(repo);
+			while (repolen > 0 && repo[repolen - 1] == '/') repolen--;
+			if (repolen > 0) {
+				snprintf(out, n, "https://github.com/%.*s/%.*s.git",
+				         (int)userlen, p, (int)repolen, repo);
+				return;
+			}
+		}
+	}
+	snprintf(out, n, "%s", url);
+}
+
 static int host_search_dir(config *c, const char *root, const char **terms, int n) {
 	(void)c;
 	int hits = 0;
@@ -1160,8 +1447,13 @@ static int host_search_dir(config *c, const char *root, const char **terms, int 
 
 int host_search(config *c, const char **terms, int n) {
 	if (n <= 0 || !c->hostsrepo || !*c->hostsrepo) return 0;
-	int hits;
-	if (is_dir(c->hostsrepo)) {
+	int hits = 0;
+	host_entry *idx = NULL;
+	int nidx = 0;
+	if (host_index_load(c, &idx, &nidx) == 0) {
+		hits = host_search_index(c, idx, nidx, terms, n);
+		host_entries_free(idx, nidx);
+	} else if (is_dir(c->hostsrepo)) {
 		hits = host_search_dir(c, c->hostsrepo, terms, n);
 	} else {
 		const char *user = geteuid() == 0 ? invoking_user_name() : NULL;
@@ -1197,10 +1489,12 @@ int host_search(config *c, const char **terms, int n) {
 				struct passwd *pw = getpwnam(user);
 				if (pw) chown(cache, pw->pw_uid, pw->pw_gid);
 			}
+					char giturl[4600];
+			host_git_url(c->hostsrepo, giturl, sizeof giturl);
 			char *gitav[] = { (char *)"git", (char *)"clone", (char *)"--depth", (char *)"1",
-			                  (char *)c->hostsrepo, (char *)root, NULL };
+			                  (char *)giturl, (char *)root, NULL };
 			if (run_argv_as(user, NULL, gitav) != 0) {
-				warn("failed to fetch nya-hosts index (%s)", c->hostsrepo);
+				warn("failed to fetch nya-hosts index (%s)", giturl);
 				return 0;
 			}
 		}

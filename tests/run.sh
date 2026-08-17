@@ -671,6 +671,30 @@ EOF
 	env $HHOME $NYA --config $ROOT/hostsearch.conf search host nope 2>&1 | grep -q "hosts/hostapp" && fail "host search should require all terms"
 	ok "host search"
 
+	echo "== host search via packages.info index =="
+	# add an index: package name that maps to a differently-named recipe file
+	cat > "$ROOT/host-repo/packages.info" <<EOF
+[hostapp]
+file=hostapp
+desc=An indexed host app for testing
+
+[aliasedhost]
+file=hostapp
+desc=Index alias pointing at the hostapp recipe
+EOF
+	env $HHOME $NYA --config $ROOT/hostsearch.conf search hostapp 2>&1 | grep -q "An indexed host app for testing" || fail "host search should use index desc"
+	env $HHOME $NYA --config $ROOT/hostsearch.conf search alias 2>&1 | grep -q "hosts/aliasedhost" || fail "host search should find index aliases"
+	env $HHOME $NYA --config $ROOT/hostsearch.conf search host indexed 2>&1 | grep -q "hosts/hostapp" || fail "host index AND terms"
+	# install via the alias: index file= mapping must resolve the recipe file
+	env $HHOME $NYA --config $ROOT/hostsearch.conf host install aliasedhost --noconfirm 2>&1 | grep -q "aliasedhost installed" || fail "host install via index alias"
+	env $HHOME $NYA --config $ROOT/hostsearch.conf -Q 2>&1 | grep -q "aliasedhost 1" || fail "aliasedhost not in local db"
+	[ -x "$ROOT/root/usr/bin/hostapp" ] || fail "aliasedhost binary missing"
+	env $HHOME $NYA --config $ROOT/hostsearch.conf remove aliasedhost --noconfirm >/dev/null 2>&1 || fail "remove aliasedhost"
+	[ ! -e "$ROOT/root/usr/bin/hostapp" ] || fail "aliasedhost not cleaned up on remove"
+	# remove the index so the later update tests use plain recipe files again
+	rm -f "$ROOT/host-repo/packages.info"
+	ok "host search via index"
+
 	echo "== host packages excluded from AUR updates =="
 	[ -f "$ROOT/root/var/lib/pacman/local/hostapp-1/nya-host" ] || fail "host marker missing in local db"
 	[ -f "$ROOT/root/var/lib/pacman/local/bundled-1/nya-host" ] || fail "bundled host marker missing in local db"
@@ -760,6 +784,62 @@ EOF
 	upout3=$(env $HHOME $NYA --config $ROOT/hostup.conf update --noconfirm 2>&1) || fail "nya update with hosts"
 	echo "$upout3" | grep -q "checking for nya-hosts updates" || fail "nya update should check hosts"
 	ok "host update"
+
+	echo "== host [dependencies] + \$SUDOBIN =="
+	# fake sudo binary so $SUDOBIN expansion is verifiable without real root
+	mkdir -p "$ROOT/fakebin"
+	cat > "$ROOT/fakebin/sudo" <<EOF
+#!/bin/sh
+echo "sudo args: \$*" >> "$ROOT/sudo-args.log"
+exec "\$@"
+EOF
+	chmod +x "$ROOT/fakebin/sudo"
+	# fresh root so the repo dependency (liba) is not already installed
+	mkdir -p "$ROOT/deproot"
+	cat > "$ROOT/hostdeps.conf" <<EOF
+[options]
+RootDir = $ROOT/deproot
+DBPath = var/lib/pacman
+CacheDir = var/cache/pacman/pkg
+LogFile = $ROOT/nya.log
+sudobin = $ROOT/fakebin/sudo
+hostsrepo = $ROOT/host-repo
+
+[extra]
+Server = file://$REPO
+EOF
+	env $HHOME $NYA --config "$ROOT/hostdeps.conf" sync --noconfirm || fail "sync for host deps"
+	cat > "$ROOT/host-repo/withdeps" <<EOF
+[repo]
+file://$ROOT/host-src/simple
+
+[folder]
+withdeps
+
+[instructions]
+make build
+\$SUDOBIN touch $ROOT/sudo-marker
+
+[binary]
+./build/tool
+
+[dependencies]
+simple
+liba
+EOF
+	depout=$(env $HHOME $NYA --config "$ROOT/hostdeps.conf" host install withdeps --noconfirm 2>&1) || fail "host install withdeps"
+	echo "$depout" | grep -q "Installing dependency simple" || fail "host dep simple should install first"
+	echo "$depout" | grep -q "Installing dependency liba" || fail "host dep liba should install first"
+	[ -x "$ROOT/deproot/usr/bin/simple" ] || fail "host dependency simple not installed"
+	[ -f "$ROOT/deproot/usr/lib/liba.so.1.0" ] || fail "repo dependency liba not installed"
+	[ -x "$ROOT/deproot/usr/bin/withdeps" ] || fail "withdeps binary missing"
+	[ -f "$ROOT/sudo-marker" ] || fail "\$SUDOBIN was not expanded"
+	grep -q "sudo args: touch" "$ROOT/sudo-args.log" || fail "fake sudo should have been invoked for the \$SUDOBIN line"
+	$NYA --config "$ROOT/hostdeps.conf" -Q | grep -q "liba 1.0-1" || fail "liba missing from deproot db"
+	$NYA --config "$ROOT/hostdeps.conf" -Q | grep -q "simple 1" || fail "simple missing from deproot db"
+	# liba was installed as a dependency of the host: it should show up under -Qd
+	$NYA --config "$ROOT/hostdeps.conf" -Qd | grep -q "liba 1.0-1" || fail "liba should be marked as a dependency"
+	ok "host dependencies + SUDOBIN"
 
 	echo
 echo "ALL TESTS PASSED"

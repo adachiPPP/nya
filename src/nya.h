@@ -330,6 +330,7 @@ int txn_build_upgrade(config *c, txn *t);
 int txn_prepare(config *c, txn *t);
 int txn_file_conflicts(config *c, txn *t);
 int txn_download(config *c, txn *t);
+int txn_run(config *c, txn *t, int mode);
 int txn_commit(config *c, txn *t);
 int txn_print_summary(config *c, txn *t, int mode);
 int txn_scan_archives(config *c, txn *t);

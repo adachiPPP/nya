@@ -380,7 +380,7 @@ static void reload_dbs(config *c) {
 	db_load_all(c);
 }
 
-static int run_txn(config *c, txn *t, int mode) {
+int txn_run(config *c, txn *t, int mode) {
 	if (txn_prepare(c, t) != 0) {
 		txn_free(t);
 		return 1;
@@ -751,7 +751,7 @@ int cli_main(int argc, char **argv) {
 				msg("there is nothing to do");
 				txn_free(&t);
 			} else {
-				rc = run_txn(c, &t, 2);
+				rc = txn_run(c, &t, 2);
 			}
 			if (rc == 0) host_update(c, NULL, 0);
 			if (rc == 0) fp_update(c);
@@ -811,7 +811,7 @@ int cli_main(int argc, char **argv) {
 			txn_free(&t);
 			break;
 		}
-		rc = run_txn(c, &t, 0);
+		rc = txn_run(c, &t, 0);
 		break;
 	}
 	case 'R': {
@@ -860,7 +860,7 @@ int cli_main(int argc, char **argv) {
 			rc = 0;
 			break;
 		}
-		rc = run_txn(c, &t, 1);
+		rc = txn_run(c, &t, 1);
 		break;
 	}
 	case 'U': {
@@ -876,7 +876,7 @@ int cli_main(int argc, char **argv) {
 			rc = 1;
 			break;
 		}
-		rc = run_txn(c, &t, 0);
+		rc = txn_run(c, &t, 0);
 		break;
 	}
 	case 'n': {
@@ -931,7 +931,7 @@ int cli_main(int argc, char **argv) {
 					break;
 				}
 			}
-			if (ok && t.nadd > 0) rc = run_txn(c, &t, 0);
+			if (ok && t.nadd > 0) rc = txn_run(c, &t, 0);
 			else {
 				txn_free(&t);
 				rc = ok ? 0 : 1;
@@ -983,7 +983,7 @@ int cli_main(int argc, char **argv) {
 				break;
 			}
 			strs_free(&notfound);
-			rc = run_txn(c, &t, 1);
+			rc = txn_run(c, &t, 1);
 		} else {
 			error("unknown host operation '%s'", cl.word);
 			rc = 1;
