@@ -326,6 +326,19 @@ int download_url(config *c, const char *url, const char *dest) {
 	return rc;
 }
 
+int download_url_quiet(config *c, const char *url, const char *dest) {
+	dl d;
+	memset(&d, 0, sizeof d);
+	d.urls = xcalloc(1, sizeof(char *));
+	d.urls[0] = xstrdup(url);
+	d.nurls = 1;
+	d.dest = dest;
+	int rc = dl_parallel(c, &d, 1);
+	free(d.urls[0]);
+	free(d.urls);
+	return rc;
+}
+
 int cache_find(config *c, const char *filename, char *out, size_t n) {
 	int i;
 	for (i = 0; i < c->cachedirs.n; i++) {

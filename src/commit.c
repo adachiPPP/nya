@@ -1023,3 +1023,19 @@ int txn_commit(config *c, txn *t) {
 	db_load_local(c);
 	return 0;
 }
+
+int install_pkgfile(config *c, const char *path) {
+	pkg *p = pkg_new("aur");
+	p->filename = xstrdup(path);
+	if (pkg_scan_archive(c, path, p) != 0) {
+		pkg_free(p);
+		return -1;
+	}
+	txn dummy;
+	memset(&dummy, 0, sizeof dummy);
+	char label[512];
+	snprintf(label, sizeof label, "installing %s", p->name);
+	int rc = install_pkg(c, p, &dummy, label);
+	pkg_free(p);
+	return rc;
+}

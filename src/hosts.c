@@ -215,7 +215,7 @@ static int host_fetch_recipe(config *c, const char *name, host_recipe *r, int qu
 	char tmp[4400];
 	snprintf(tmp, sizeof tmp, "/tmp/nya-host-%ld-%s", (long)getpid(), name);
 	if (!quiet) info("Fetching recipe for %s...", name);
-	if (download_url(c, url, tmp) != 0) {
+	if ((quiet ? download_url_quiet : download_url)(c, url, tmp) != 0) {
 		unlink(tmp);
 		if (!quiet) error("failed to fetch recipe for host '%s'", name);
 		return -1;

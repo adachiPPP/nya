@@ -370,6 +370,257 @@ int aur_pkg_exists(config *c, const char *name) {
 	return found;
 }
 
+static strs g_aur_building;
+
+static int aur_dep_already(const char *name) {
+	int i;
+	for (i = 0; i < g_aur_building.n; i++) {
+		if (strcmp(g_aur_building.v[i], name) == 0) return 1;
+	}
+	return 0;
+}
+
+static int resolve_dep_name(const char *spec, char *out, size_t n) {
+	const char *p = spec;
+	while (*p && *p != '>' && *p != '<' && *p != '=' && *p != ' ' && *p != '\t') p++;
+	size_t len = p - spec;
+	if (len == 0 || len >= n) return -1;
+	memcpy(out, spec, len);
+	out[len] = '\0';
+	return 0;
+}
+
+static int aur_run_makepkg(const char *dir, int root, const char *buser) {
+	pid_t pid = fork();
+	if (pid < 0) return -1;
+	if (pid == 0) {
+		chdir(dir);
+		if (root && buser) {
+			execlp("runuser", "runuser", "-u", buser, "--", "makepkg", "--nodeps", "--noconfirm", (char *)NULL);
+		} else {
+			execlp("makepkg", "makepkg", "--nodeps", "--noconfirm", (char *)NULL);
+		}
+		_exit(127);
+	}
+	int st;
+	while (waitpid(pid, &st, 0) < 0) {
+		if (errno != EINTR) break;
+	}
+	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) return -1;
+	return 0;
+}
+
+static int aur_fetch_snapshot(config *c, const char *name, const char *dir, const char *tarball, int root, const char *buser) {
+	if (is_file(tarball)) return 0;
+	rm_rf(dir);
+	mkdir_p(dir, 0755);
+	if (root && buser) {
+		struct passwd *pw = getpwnam(buser);
+		if (pw) chown(dir, pw->pw_uid, pw->pw_gid);
+	}
+	char url[4600];
+	snprintf(url, sizeof url, "%s/cgit/aur.git/snapshot/%s.tar.gz", c->aurbase, name);
+	int dlrc = -1;
+	int attempt;
+	for (attempt = 0; attempt < 3; attempt++) {
+		dlrc = download_url(c, url, tarball);
+		if (dlrc == 0) break;
+		if (attempt < 2) sleep(2);
+	}
+	if (dlrc != 0) return -1;
+	if (extract_snapshot(tarball, dir) != 0) return -1;
+	if (root && buser) {
+		struct passwd *pw = getpwnam(buser);
+		if (pw) chown_r(dir, pw->pw_uid, pw->pw_gid);
+	}
+	return 0;
+}
+
+static int aur_resolve_deps(config *c, const char *name) {
+	if (!aur_enabled(c)) return -1;
+	if (aur_dep_already(name)) return 0;
+
+	int root = geteuid() == 0;
+	const char *buser = root ? invoking_user_name() : NULL;
+	char build[4096];
+	build_dir_for(buser, build, sizeof build);
+	char dir[4300];
+	snprintf(dir, sizeof dir, "%s/%s", build, name);
+	char tarball[4400];
+	snprintf(tarball, sizeof tarball, "%s/%s.tar.gz", dir, name);
+
+	if (aur_fetch_snapshot(c, name, dir, tarball, root, buser) != 0) return -1;
+
+	char pkgbuild[4400];
+	snprintf(pkgbuild, sizeof pkgbuild, "%s/PKGBUILD", dir);
+	if (!is_file(pkgbuild)) return -1;
+
+	char cmd[8192];
+	snprintf(cmd, sizeof cmd,
+		"bash -c '. '%s' 2>/dev/null; "
+		"for d in \"${depends[@]}\"; do echo \"D $d\"; done; "
+		"for d in \"${makedepends[@]}\"; do echo \"M $d\"; done; "
+		"for d in \"${checkdepends[@]}\"; do echo \"C $d\"; done; '",
+		pkgbuild);
+	FILE *fp = popen(cmd, "r");
+	if (!fp) return -1;
+
+	char line[1024];
+	while (fgets(line, sizeof line, fp)) {
+		char *nl = strchr(line, '\n');
+		if (nl) *nl = '\0';
+		if (line[0] == '\0') continue;
+		char depname[256];
+		if (resolve_dep_name(line + 2, depname, sizeof depname) != 0) continue;
+		if (db_find_local(depname)) continue;
+		if (aur_dep_already(depname)) continue;
+		if (db_find_sync(depname)) {
+			txn dt;
+			txn_init(&dt, c);
+			const char *dname = depname;
+			if (txn_build_install(c, &dname, 1, &dt, NULL) == 0 && dt.nadd > 0) {
+				int saved = g_overwrite;
+				g_overwrite = 1;
+				info("Installing repo dependency %s for %s...", depname, name);
+				txn_run(c, &dt, 0);
+				g_overwrite = saved;
+			} else {
+				txn_free(&dt);
+			}
+		} else if (aur_pkg_exists(c, depname)) {
+			info("Resolving AUR dependency %s for %s...", depname, name);
+			aur_resolve_and_build(c, depname);
+		}
+	}
+	pclose(fp);
+	return 0;
+}
+
+int aur_resolve_and_build(config *c, const char *name) {
+	if (!aur_enabled(c)) return -1;
+	if (aur_dep_already(name)) return 0;
+	if (db_find_local(name)) return 0;
+	if (db_find_sync(name)) return 0;
+	if (!aur_pkg_exists(c, name)) return 0;
+
+	int root = geteuid() == 0;
+	const char *buser = root ? invoking_user_name() : NULL;
+	char build[4096];
+	build_dir_for(buser, build, sizeof build);
+	char dir[4300];
+	snprintf(dir, sizeof dir, "%s/%s", build, name);
+	char tarball[4400];
+	snprintf(tarball, sizeof tarball, "%s/%s.tar.gz", dir, name);
+
+	strs_add(&g_aur_building, name);
+
+	if (aur_fetch_snapshot(c, name, dir, tarball, root, buser) != 0) {
+		int i;
+		for (i = 0; i < g_aur_building.n; i++) {
+			if (strcmp(g_aur_building.v[i], name) == 0) {
+				g_aur_building.v[i] = g_aur_building.v[g_aur_building.n - 1];
+				g_aur_building.n--;
+				break;
+			}
+		}
+		return -1;
+	}
+
+	if (aur_resolve_deps(c, name) != 0) {
+		int i;
+		for (i = 0; i < g_aur_building.n; i++) {
+			if (strcmp(g_aur_building.v[i], name) == 0) {
+				g_aur_building.v[i] = g_aur_building.v[g_aur_building.n - 1];
+				g_aur_building.n--;
+				break;
+			}
+		}
+		return -1;
+	}
+
+	info("Building %s with makepkg...", name);
+	if (aur_run_makepkg(dir, root, buser) != 0) {
+		error("failed to build %s", name);
+		int i;
+		for (i = 0; i < g_aur_building.n; i++) {
+			if (strcmp(g_aur_building.v[i], name) == 0) {
+				g_aur_building.v[i] = g_aur_building.v[g_aur_building.n - 1];
+				g_aur_building.n--;
+				break;
+			}
+		}
+		return -1;
+	}
+
+	DIR *d = opendir(dir);
+	if (!d) {
+		int i;
+		for (i = 0; i < g_aur_building.n; i++) {
+			if (strcmp(g_aur_building.v[i], name) == 0) {
+				g_aur_building.v[i] = g_aur_building.v[g_aur_building.n - 1];
+				g_aur_building.n--;
+				break;
+			}
+		}
+		return -1;
+	}
+	struct dirent *de;
+	char found[4400] = "";
+	char fallback[4400] = "";
+	char pf[96];
+	snprintf(pf, sizeof pf, "%s-", name);
+	char dbg[128];
+	snprintf(dbg, sizeof dbg, "%s-debug-", name);
+	while ((de = readdir(d)) != NULL) {
+		if (!(endswith(de->d_name, ".pkg.tar.zst") || endswith(de->d_name, ".pkg.tar.xz") ||
+		      endswith(de->d_name, ".pkg.tar.gz") || endswith(de->d_name, ".pkg.tar")))
+			continue;
+		if (fallback[0] == '\0') snprintf(fallback, sizeof fallback, "%s/%s", dir, de->d_name);
+		if (startswith(de->d_name, dbg)) continue;
+		if (startswith(de->d_name, pf) && found[0] == '\0') {
+			snprintf(found, sizeof found, "%s/%s", dir, de->d_name);
+		}
+	}
+	closedir(d);
+	if (found[0] == '\0') snprintf(found, sizeof found, "%s", fallback);
+	if (found[0] == '\0') {
+		error("makepkg finished but no package file was produced for %s", name);
+		int i;
+		for (i = 0; i < g_aur_building.n; i++) {
+			if (strcmp(g_aur_building.v[i], name) == 0) {
+				g_aur_building.v[i] = g_aur_building.v[g_aur_building.n - 1];
+				g_aur_building.n--;
+				break;
+			}
+		}
+		return -1;
+	}
+	info("Installing AUR dependency %s...", name);
+	if (install_pkgfile(c, found) != 0) {
+		error("failed to install built package %s", name);
+		int i;
+		for (i = 0; i < g_aur_building.n; i++) {
+			if (strcmp(g_aur_building.v[i], name) == 0) {
+				g_aur_building.v[i] = g_aur_building.v[g_aur_building.n - 1];
+				g_aur_building.n--;
+				break;
+			}
+		}
+		return -1;
+	}
+	db_load_local(c);
+
+	int i;
+	for (i = 0; i < g_aur_building.n; i++) {
+		if (strcmp(g_aur_building.v[i], name) == 0) {
+			g_aur_building.v[i] = g_aur_building.v[g_aur_building.n - 1];
+			g_aur_building.n--;
+			break;
+		}
+	}
+	return 0;
+}
+
 int aur_build_install(config *c, const char *name, txn *t) {
 	if (!aur_enabled(c)) return -1;
 	if (aur_malware_check(c, name)) {
@@ -430,6 +681,8 @@ int aur_build_install(config *c, const char *name, txn *t) {
 		error("no PKGBUILD found in AUR snapshot for %s", name);
 		return -1;
 	}
+	info("Resolving AUR dependencies for %s...", name);
+	aur_resolve_deps(c, name);
 	if (root && buser) {
 		struct passwd *pw = getpwnam(buser);
 		if (!pw) {
@@ -444,9 +697,9 @@ int aur_build_install(config *c, const char *name, txn *t) {
 	if (pid == 0) {
 		chdir(dir);
 		if (root && buser) {
-			execlp("runuser", "runuser", "-u", buser, "--", "makepkg", "--syncdeps", "--noconfirm", (char *)NULL);
+			execlp("runuser", "runuser", "-u", buser, "--", "makepkg", "--nodeps", "--noconfirm", (char *)NULL);
 		} else {
-			execlp("makepkg", "makepkg", "--syncdeps", "--noconfirm", (char *)NULL);
+			execlp("makepkg", "makepkg", "--nodeps", "--noconfirm", (char *)NULL);
 		}
 		_exit(127);
 	}

@@ -21,7 +21,7 @@
 #include <sys/file.h>
 #include <strings.h>
 
-#define NYA_VERSION "2.5.0"
+#define NYA_VERSION "2.6.0"
 
 typedef struct {
 	char **v;
@@ -308,6 +308,7 @@ int dl_parallel(config *c, dl *jobs, int n);
 int dl_mirror(config *c, repo *r, const char *rel, const char *dest);
 int download_pkg(config *c, pkg *p, char *outpath, size_t outlen);
 int download_url(config *c, const char *url, const char *dest);
+int download_url_quiet(config *c, const char *url, const char *dest);
 int cache_find(config *c, const char *filename, char *out, size_t n);
 int pkg_verify_file(config *c, pkg *p, const char *path);
 
@@ -335,6 +336,7 @@ int txn_file_conflicts(config *c, txn *t);
 int txn_download(config *c, txn *t);
 int txn_run(config *c, txn *t, int mode);
 int txn_commit(config *c, txn *t);
+int install_pkgfile(config *c, const char *path);
 int txn_print_summary(config *c, txn *t, int mode);
 int txn_scan_archives(config *c, txn *t);
 
@@ -352,6 +354,7 @@ int aur_search_multi(config *c, const char **terms, int n);
 int aur_search_any(config *c, const char **terms, int n);
 int aur_info(config *c, const char *name);
 int aur_build_install(config *c, const char *name, txn *t);
+int aur_resolve_and_build(config *c, const char *name);
 int aur_pkg_exists(config *c, const char *name);
 int fp_available(void);
 int aur_update(config *c, txn *t);

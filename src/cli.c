@@ -870,7 +870,12 @@ int cli_main(int argc, char **argv) {
 			txn_free(&t);
 			break;
 		}
+		{
+			int saved = g_overwrite;
+			g_overwrite = 1;
 		rc = txn_run(c, &t, 0);
+			g_overwrite = saved;
+		}
 		break;
 	}
 	case 'R': {
