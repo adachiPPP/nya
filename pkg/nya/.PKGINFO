@@ -6,9 +6,9 @@ xdata = pkgtype=pkg
 pkgver = 2.5.0-1
 pkgdesc = A pacman-compatible package manager written in C, with AUR, nix and flatpak support
 url = https://github.com/adachip/nya
-builddate = 1787302655
+builddate = 1787303019
 packager = Unknown Packager
-size = 207080
+size = 199104
 arch = x86_64
 license = custom
 depend = curl

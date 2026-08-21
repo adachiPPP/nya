@@ -6,9 +6,9 @@ xdata = pkgtype=debug
 pkgver = 2.5.0-1
 pkgdesc = Detached debugging symbols for nya
 url = https://github.com/adachip/nya
-builddate = 1787302655
+builddate = 1787303019
 packager = Unknown Packager
-size = 989343
+size = 926658
 arch = x86_64
 license = custom
 makedepend = pkg-config

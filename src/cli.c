@@ -67,6 +67,7 @@ static int parse_long(cli *cl, const char *arg, int *i, int argc, char **argv) {
 		if (*i + 2 >= argc) return -1;
 		cl->save_key = argv[++(*i)];
 		cl->save_val = argv[++(*i)];
+		cl->op = '!';
 		return 0;
 	}
 	if (strcmp(arg, "--read-paconfig") == 0) {
