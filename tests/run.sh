@@ -416,7 +416,7 @@ NYA_CONF="$ROOT/auto/nya.conf" $NYA config >/dev/null 2>&1 || true
 ok "first-use config generation"
 
 echo "== version/help =="
-$NYA --version | grep -q "2.7.0" || fail "--version"
+$NYA --version | grep -q "2.8.0" || fail "--version"
 $NYA --help | grep -q "nya install" || fail "--help"
 ok "version/help"	echo "== sync vs update =="
 	mkdir -p "$ROOT/fakebin"

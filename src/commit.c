@@ -144,6 +144,10 @@ static int noupgrade_match(config *c, const char *relpath) {
 
 static int write_file_from_tar(tar_it *t, tar_entry *e, const char *dest, char *shaout) {
 	int fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, e->mode & 0777);
+	if (fd < 0 && errno == ETXTBSY) {
+		unlink(dest);
+		fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, e->mode & 0777);
+	}
 	if (fd < 0) {
 		error("could not open %s: %s", dest, strerror(errno));
 		return -1;
