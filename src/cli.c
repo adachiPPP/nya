@@ -429,6 +429,9 @@ int txn_run(config *c, txn *t, int mode) {
 		txn_free(t);
 		return 1;
 	}
+	if (txn_has_systemd_units(t)) {
+		daemon_reload();
+	}
 	txn_free(t);
 	return 0;
 }
@@ -704,7 +707,10 @@ int cli_main(int argc, char **argv) {
 	else if (cl.op == 'S') {
 		needs_dbs = !(cl.y && !cl.u && !cl.s && cl.i == 0 && cl.cclean == 0 && cl.targets.n == 0);
 	} else if (cl.op == 'a' || cl.op == 'H') needs_dbs = 1;
-	if (needs_dbs) db_load_all(c);
+	if (needs_dbs) {
+		db_load_all(c);
+		db_check_corruption(c);
+	}
 	int rc = 0;
 	switch (cl.op) {
 	case 'Q': {

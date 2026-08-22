@@ -621,3 +621,63 @@ const char *col_yellow(void) { return esc("\033[1;33m"); }
 const char *col_cyan(void) { return esc("\033[1;36m"); }
 const char *col_magenta(void) { return esc("\033[1;35m"); }
 const char *col_reset(void) { return esc("\033[0m"); }
+
+int txn_has_systemd_units(txn *t) {
+	int i, j;
+	for (i = 0; i < t->nadd; i++) {
+		pkg *p = t->add[i];
+		for (j = 0; j < p->files.n; j++) {
+			if (strstr(p->files.v[j], ".service") ||
+			    strstr(p->files.v[j], ".socket") ||
+			    strstr(p->files.v[j], ".timer") ||
+			    strstr(p->files.v[j], ".target") ||
+			    strstr(p->files.v[j], ".path") ||
+			    strstr(p->files.v[j], ".mount") ||
+			    strstr(p->files.v[j], ".automount"))
+				return 1;
+		}
+	}
+	return 0;
+}
+
+void daemon_reload(void) {
+	char *argv[] = { (char *)"systemctl", (char *)"daemon-reload", NULL };
+	run_cmd(argv);
+}
+
+static int is_driver_pkg(const char *name) {
+	if (!name) return 0;
+	return strstr(name, "nvidia") || strstr(name, "mesa") ||
+	       strstr(name, "amdvlk") || strstr(name, "lib32-nvidia") ||
+	       strstr(name, "vulkan") || strstr(name, "linux-firmware") ||
+	       strstr(name, "dkms");
+}
+
+void driver_post_install(txn *t) {
+	int i, need_mkinitcpio = 0, need_modprobe = 0;
+	for (i = 0; i < t->nadd; i++) {
+		if (is_driver_pkg(t->add[i]->name)) {
+			need_mkinitcpio = 1;
+			if (strstr(t->add[i]->name, "nvidia") || strstr(t->add[i]->name, "mesa"))
+				need_modprobe = 1;
+		}
+	}
+	if (need_mkinitcpio) {
+		info("rebuilding initramfs...");
+		char *argv[] = { (char *)"mkinitcpio", (char *)"-P", NULL };
+		run_cmd(argv);
+	}
+	if (need_modprobe) {
+		info("reloading kernel modules...");
+		char *r1[] = { (char *)"modprobe", (char *)"-r", (char *)"nvidia_drm", (char *)"nvidia_modeset", (char *)"nvidia_uvm", (char *)"nvidia", NULL };
+		run_cmd(r1);
+		char *r2[] = { (char *)"modprobe", (char *)"nvidia", NULL };
+		run_cmd(r2);
+		char *r3[] = { (char *)"modprobe", (char *)"nvidia_uvm", NULL };
+		run_cmd(r3);
+		char *r4[] = { (char *)"modprobe", (char *)"nvidia_modeset", NULL };
+		run_cmd(r4);
+		char *r5[] = { (char *)"modprobe", (char *)"nvidia_drm", NULL };
+		run_cmd(r5);
+	}
+}

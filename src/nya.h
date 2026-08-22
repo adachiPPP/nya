@@ -21,7 +21,7 @@
 #include <sys/file.h>
 #include <strings.h>
 
-#define NYA_VERSION "2.6.0"
+#define NYA_VERSION "2.7.0"
 
 typedef struct {
 	char **v;
@@ -284,6 +284,7 @@ void db_build_owner_map(void);
 const char *db_owner(const char *relpath);
 int db_write_local_pkg(config *c, pkg *p);
 void db_remove_local(config *c, const char *name, const char *version);
+int db_check_corruption(config *c);
 int db_entry_path(config *c, pkg *p, char *out, size_t n);
 hmap *mtree_sha_map(const char *data, long len);
 
@@ -339,6 +340,9 @@ int txn_commit(config *c, txn *t);
 int install_pkgfile(config *c, const char *path);
 int txn_print_summary(config *c, txn *t, int mode);
 int txn_scan_archives(config *c, txn *t);
+int txn_has_systemd_units(txn *t);
+void daemon_reload(void);
+void driver_post_install(txn *t);
 
 int refresh_dbs(config *c, int force);
 int do_search(config *c, const char **terms, int n, int local);

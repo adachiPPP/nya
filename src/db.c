@@ -520,6 +520,43 @@ void db_remove_local(config *c, const char *name, const char *version) {
 	}
 }
 
+int db_check_corruption(config *c) {
+	char localdir[4096];
+	snprintf(localdir, sizeof localdir, "%s/local", c->dbpath);
+	DIR *d = opendir(localdir);
+	if (!d) return 0;
+	int issues = 0;
+	struct dirent *de;
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.') continue;
+		char entry[4600];
+		snprintf(entry, sizeof entry, "%s/%s", localdir, de->d_name);
+		if (!is_dir(entry)) {
+			error("corrupted db entry: %s is not a directory", de->d_name);
+			issues++;
+			continue;
+		}
+		char name[512], ver[512];
+		name_version_split(de->d_name, name, sizeof name, ver, sizeof ver);
+		if (!*name) {
+			error("invalid name for database entry '%s'", de->d_name);
+			issues++;
+			continue;
+		}
+		char descpath[4600];
+		snprintf(descpath, sizeof descpath, "%s/desc", entry);
+		if (!is_file(descpath)) {
+			error("could not open file %s (missing desc)", descpath);
+			issues++;
+		}
+	}
+	closedir(d);
+	if (issues > 0) {
+		error("%d corrupted database entries found - run 'sudo nya clean --all' or manually fix /var/lib/pacman/local/", issues);
+	}
+	return issues;
+}
+
 hmap *mtree_sha_map(const char *data, long len) {
 	hmap *m = hmap_new(256);
 	const char *p = data;

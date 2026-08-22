@@ -1015,6 +1015,7 @@ int txn_commit(config *c, txn *t) {
 		}
 	}
 	run_hooks(c, t, 0);
+	driver_post_install(t);
 	log_alpm("transaction completed");
 	unlock_db();
 	g_nlocal = 0;
@@ -1033,9 +1034,17 @@ int install_pkgfile(config *c, const char *path) {
 	}
 	txn dummy;
 	memset(&dummy, 0, sizeof dummy);
+	txn_add_add(&dummy, p);
+	run_hooks(c, &dummy, 1);
 	char label[512];
 	snprintf(label, sizeof label, "installing %s", p->name);
 	int rc = install_pkg(c, p, &dummy, label);
+	run_hooks(c, &dummy, 0);
+	driver_post_install(&dummy);
+	g_nlocal = 0;
+	free(g_local);
+	g_local = NULL;
+	db_load_local(c);
 	pkg_free(p);
 	return rc;
 }
