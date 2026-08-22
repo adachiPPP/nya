@@ -3,10 +3,10 @@
 pkgname = nya-debug
 pkgbase = nya
 xdata = pkgtype=debug
-pkgver = 2.8.0-1
+pkgver = 2.9.0-1
 pkgdesc = Detached debugging symbols for nya
 url = https://github.com/adachip/nya
-builddate = 1787388762
+builddate = 1787389779
 packager = Unknown Packager
 size = 59760
 arch = x86_64

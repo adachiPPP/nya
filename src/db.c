@@ -529,6 +529,7 @@ int db_check_corruption(config *c) {
 	struct dirent *de;
 	while ((de = readdir(d)) != NULL) {
 		if (de->d_name[0] == '.') continue;
+		if (strcmp(de->d_name, "ALPM_DB_VERSION") == 0 || strcmp(de->d_name, "files") == 0) continue;
 		char entry[4600];
 		snprintf(entry, sizeof entry, "%s/%s", localdir, de->d_name);
 		if (!is_dir(entry)) {
