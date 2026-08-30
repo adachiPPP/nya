@@ -3,12 +3,12 @@
 pkgname = nya-debug
 pkgbase = nya
 xdata = pkgtype=debug
-pkgver = 3.0.0-1
+pkgver = 3.0.0-2
 pkgdesc = Detached debugging symbols for nya
 url = https://github.com/adachiPPP/nya
-builddate = 1788117953
+builddate = 1788121314
 packager = Unknown Packager
-size = 60128
+size = 60584
 arch = x86_64
 license = custom
 makedepend = pkg-config

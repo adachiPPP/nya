@@ -3,12 +3,12 @@
 pkgname = nya
 pkgbase = nya
 xdata = pkgtype=pkg
-pkgver = 3.0.0-1
+pkgver = 3.0.0-2
 pkgdesc = A pacman-compatible package manager written in C, with AUR, nix and flatpak support
 url = https://github.com/adachiPPP/nya
-builddate = 1788117953
+builddate = 1788121314
 packager = Unknown Packager
-size = 204176
+size = 204184
 arch = x86_64
 license = custom
 depend = curl

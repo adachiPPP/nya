@@ -434,6 +434,39 @@ int txn_run(config *c, txn *t, int mode) {
 		txn_free(t);
 		return 1;
 	}
+	/* --user mode: symlink installed binaries into ~/.local/bin */
+	if (g_user_mode) {
+		int i;
+		char localbin[4096];
+		snprintf(localbin, sizeof localbin, "%s/.local/bin", g_user_prefix);
+		mkdir_p(localbin, 0755);
+		for (i = 0; i < t->nadd; i++) {
+			pkg *p = t->add[i];
+			int j;
+			for (j = 0; j < p->files.n; j++) {
+				const char *f = p->files.v[j];
+				if (strncmp(f, "usr/bin/", 8) == 0) {
+					const char *basename = f + 8;
+					char linkpath[4096];
+					snprintf(linkpath, sizeof linkpath, "%s/%s", localbin, basename);
+					char target[4096];
+					snprintf(target, sizeof target, "%s/%s", c->rootdir, f);
+					/* warn about root-only tools */
+					if (strcmp(basename, "sudo") == 0 || strcmp(basename, "doas") == 0 ||
+					    strcmp(basename, "su") == 0 || strcmp(basename, "mount") == 0 ||
+					    strcmp(basename, "umount") == 0 || strcmp(basename, "reboot") == 0 ||
+					    strcmp(basename, "shutdown") == 0 || strcmp(basename, "halt") == 0 ||
+					    strcmp(basename, "passwd") == 0 || strcmp(basename, "fdisk") == 0 ||
+					    strcmp(basename, "mkfs") == 0 || strcmp(basename, "pacman") == 0 ||
+					    strcmp(basename, "nya") == 0) {
+						warn("%s is a root/system tool - do NOT use --user for system packages!", basename);
+					}
+					unlink(linkpath);
+					symlink(target, linkpath);
+				}
+			}
+		}
+	}
 	if (txn_has_systemd_units(t)) {
 		daemon_reload();
 	}
@@ -683,6 +716,7 @@ int cli_main(int argc, char **argv) {
 	g_overwrite = cl.overwrite;
 	/* --user mode: override paths to ~/.local and skip sudo */
 	if (g_user_mode) {
+		warn("--user mode: installing to ~/.local (user apps only, NOT root/system tools!)");
 		const char *home = getenv("HOME");
 		if (!home || !*home) {
 			error("--user requires $HOME to be set");
@@ -712,12 +746,24 @@ int cli_main(int argc, char **argv) {
 		free(c->logfile);
 		c->logfile = xstrdup(user_log);
 		set_logfile(c->logfile);
-		/* ensure dirs exist */
+		/* ensure dirs exist and are writable */
 		mkdir_p(c->dbpath, 0755);
 		mkdir_p(c->nyacache, 0755);
 		char user_bin[4096];
 		snprintf(user_bin, sizeof user_bin, "%s/.local/bin", home);
 		mkdir_p(user_bin, 0755);
+		/* fix stale root-owned cache dirs from previous sudo runs */
+		if (access(c->nyacache, W_OK) != 0) {
+			warn("cache %s is not writable (root-owned?), using /tmp fallback", c->nyacache);
+			char fallback[4096];
+			snprintf(fallback, sizeof fallback, "/tmp/nya-cache-%d", (int)getuid());
+			rm_rf(fallback);
+			mkdir_p(fallback, 0755);
+			free(c->nyacache);
+			c->nyacache = xstrdup(fallback);
+			strs_free(&c->cachedirs);
+			strs_add(&c->cachedirs, c->nyacache);
+		}
 	}
 	if (cl.op == 'c') {
 		print_config(c);

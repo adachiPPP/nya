@@ -177,6 +177,19 @@ static void pj_setup(pj *j) {
 	j->dlnow = 0;
 	j->dltotal = 0;
 	if (j->d->dest) {
+		/* ensure parent directory exists and is writable */
+		char parent[4200];
+		snprintf(parent, sizeof parent, "%s", j->d->dest);
+		char *slash = strrchr(parent, '/');
+		if (slash) {
+			*slash = '\0';
+			mkdir_p(parent, 0755);
+			/* if dir exists but is not writable (e.g. root-owned), fix it */
+			if (access(parent, W_OK) != 0) {
+				rm_rf(parent);
+				mkdir_p(parent, 0755);
+			}
+		}
 		j->fp = fopen(j->d->dest, "wb");
 		if (!j->fp) {
 			j->err = errno;
