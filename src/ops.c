@@ -258,7 +258,7 @@ int do_check(config *c, const char **targets, int n, int deep) {
 		error("%d file(s) failed integrity check", failures);
 		return 1;
 	}
-	msg("no problems found");
+	msg("no problems found mreow~");
 	return 0;
 }
 
@@ -363,7 +363,7 @@ int refresh_dbs(config *c, int force) {
 		n_stale++;
 	}
 	if (n_stale == 0) {
-		info("All package databases are up to date");
+		info("All package databases are up to date mreow~");
 		free(stale);
 		for (i = 0; i < n; i++) {
 			free(tmps[i]);

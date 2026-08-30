@@ -490,6 +490,8 @@ int g_noconfirm = 0;
 int g_overwrite = 0;
 int g_color = 0;
 int g_verbose = 0;
+int g_user_mode = 0;
+char *g_user_prefix = NULL;
 static const char *g_logpath = NULL;
 
 void set_logfile(const char *path) {
@@ -515,7 +517,7 @@ void info(const char *fmt, ...) {
 	va_start(ap, fmt);
 	vprintf(fmt, ap);
 	va_end(ap);
-	printf("\n");
+	printf(" :3\n");
 }
 
 void warn(const char *fmt, ...) {
@@ -524,7 +526,7 @@ void warn(const char *fmt, ...) {
 	va_start(ap, fmt);
 	vfprintf(stderr, fmt, ap);
 	va_end(ap);
-	fprintf(stderr, "\n");
+	fprintf(stderr, " :/\n");
 }
 
 void error(const char *fmt, ...) {
@@ -533,7 +535,7 @@ void error(const char *fmt, ...) {
 	va_start(ap, fmt);
 	vfprintf(stderr, fmt, ap);
 	va_end(ap);
-	fprintf(stderr, "\n");
+	fprintf(stderr, " 3;\n");
 }
 
 void msg(const char *fmt, ...) {

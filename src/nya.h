@@ -21,7 +21,7 @@
 #include <sys/file.h>
 #include <strings.h>
 
-#define NYA_VERSION "2.9.0"
+#define NYA_VERSION "3.0.0"
 
 typedef struct {
 	char **v;
@@ -95,6 +95,8 @@ extern int g_noconfirm;
 extern int g_overwrite;
 extern int g_color;
 extern int g_verbose;
+extern int g_user_mode;
+extern char *g_user_prefix;
 void log_alpm(const char *fmt, ...);
 void set_logfile(const char *path);
 void info(const char *fmt, ...);

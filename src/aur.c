@@ -28,29 +28,30 @@ static int aur_enabled(config *c) {
 	return 1;
 }
 
-#define MALWARE_URL "https://raw.githubusercontent.com/lenucksi/aur-malware-check/master/data/campaigns/aur-infected/packages.txt"
+#define MALWARE_URL "https://raw.githubusercontent.com/DeSynkro/aur-scan/main/aur_pkg_list.txt"
 
 static hmap *g_malware = NULL;
 static int g_malware_state = 0; /* 0 = not tried, 1 = loaded, 2 = failed */
 
-static void malware_load(config *c) {
+static void malware_load_url(config *c, const char *url, hmap *m) {
 	char *data;
 	long len;
-	if (dl_url_quick(c, MALWARE_URL, &data, &len, 15) != 0) {
-		g_malware_state = 2;
-		return;
-	}
-	g_malware = hmap_new(2048);
+	if (dl_url_quick(c, url, &data, &len, 15) != 0) return;
 	char *line = data;
 	while (line && *line) {
 		char *nl = strchr(line, '\n');
 		if (nl) *nl = '\0';
 		trim(line);
-		if (*line) hmap_put(g_malware, line, (void *)1);
+		if (*line) hmap_put(m, line, (void *)1);
 		if (!nl) break;
 		line = nl + 1;
 	}
 	free(data);
+}
+
+static void malware_load(config *c) {
+	g_malware = hmap_new(4096);
+	malware_load_url(c, MALWARE_URL, g_malware);
 	g_malware_state = 1;
 }
 
@@ -624,7 +625,7 @@ int aur_resolve_and_build(config *c, const char *name) {
 int aur_build_install(config *c, const char *name, txn *t) {
 	if (!aur_enabled(c)) return -1;
 	if (aur_malware_check(c, name)) {
-		error("refusing to install '%s': listed as malware in aur-malware-check (https://github.com/lenucksi/aur-malware-check)", name);
+		error("refusing to install '%s': listed as AUR malware (https://github.com/DeSynkro/aur-scan)", name);
 		return -1;
 	}
 	if (!aur_pkg_exists(c, name)) {
@@ -743,7 +744,7 @@ int aur_build_install(config *c, const char *name, txn *t) {
 		pkg_free(p);
 		return -1;
 	}
-	info("Built %s-%s", p->name, p->version);
+	info("Built %s-%s mreow~", p->name, p->version);
 	txn_add_add(t, p);
 	return 0;
 }
@@ -821,7 +822,7 @@ int aur_update(config *c, txn *t) {
 				}
 			}
 			if (aur_malware_check(c, n)) {
-				warn("%s: skipping upgrade: listed as malware in aur-malware-check", n);
+				warn("%s: skipping upgrade: listed as AUR malware (https://github.com/DeSynkro/aur-scan)", n);
 				continue;
 			}
 			printf("%saur/%s%s %s%s%s -> %s%s%s\n", col_magenta(), n, col_reset(),
@@ -836,6 +837,6 @@ int aur_update(config *c, txn *t) {
 		json_free(root);
 	}
 	strs_free(&foreign);
-	if (updated == 0 && nfound > 0) msg("no AUR updates available");
+	if (updated == 0 && nfound > 0) msg("no AUR updates available mreow~");
 	return 0;
 }

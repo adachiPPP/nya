@@ -1,9 +1,9 @@
 pkgname=nya
-pkgver=2.9.0
+pkgver=3.0.0
 pkgrel=1
 pkgdesc="A pacman-compatible package manager written in C, with AUR, nix and flatpak support"
 arch=('x86_64' 'aarch64')
-url="https://github.com/adachip/nya"
+url="https://github.com/adachiPPP/nya"
 license=('custom')
 depends=('curl' 'zlib' 'zstd' 'xz')
 makedepends=('pkg-config')

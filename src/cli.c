@@ -56,6 +56,7 @@ static void print_help(void) {
 	printf("  --noconfirm    --needed    --asdeps    --overwrite\n");
 	printf("  --config <path> --root <dir> --dbpath <path> --cachedir <dir>\n");
 	printf("  --color --nocolor --verbose --quiet --help --version\n");
+	printf("  --user                  user-local install mode (~/.local/bin, no sudo)\n");
 	printf("\nconfig options (set via nya --save <key> <value>):\n");
 	printf("  sudobin = sudo|doas   aur = true|false   searchaur = true|false\n");
 	printf("  searchhost = true|false   hostsrepo = <url>   aurfirst = true|false\n");
@@ -72,6 +73,10 @@ static int parse_long(cli *cl, const char *arg, int *i, int argc, char **argv) {
 	}
 	if (strcmp(arg, "--read-paconfig") == 0) {
 		cl->op = 'P';
+		return 0;
+	}
+	if (strcmp(arg, "--user") == 0) {
+		g_user_mode = 1;
 		return 0;
 	}
 	if (strcmp(arg, "--noconfirm") == 0) {
@@ -414,13 +419,13 @@ int txn_run(config *c, txn *t, int mode) {
 	txn_print_summary(c, t, mode);
 	if (mode == 1) {
 		if (!yesno("Do you want to remove these packages? ")) {
-			msg("operation cancelled");
+			msg("operation cancelled >.<");
 			txn_free(t);
 			return 1;
 		}
 	} else {
 		if (!yesno("Proceed with installation? ")) {
-			msg("operation cancelled");
+			msg("operation cancelled >.<");
 			txn_free(t);
 			return 1;
 		}
@@ -676,13 +681,51 @@ int cli_main(int argc, char **argv) {
 	if (c->logfile && *c->logfile) set_logfile(c->logfile);
 	g_noconfirm = cl.noconfirm;
 	g_overwrite = cl.overwrite;
+	/* --user mode: override paths to ~/.local and skip sudo */
+	if (g_user_mode) {
+		const char *home = getenv("HOME");
+		if (!home || !*home) {
+			error("--user requires $HOME to be set");
+			config_free(c);
+			strs_free(&cl.targets);
+			return 1;
+		}
+		g_user_prefix = xstrdup(home);
+		char user_root[4096];
+		snprintf(user_root, sizeof user_root, "%s/.local", home);
+		free(c->rootdir);
+		c->rootdir = xstrdup(user_root);
+		char user_db[4096];
+		snprintf(user_db, sizeof user_db, "%s/.local/share/nya", home);
+		free(c->dbpath);
+		c->dbpath = xstrdup(user_db);
+		strs_free(&c->cachedirs);
+		char user_cache[4096];
+		snprintf(user_cache, sizeof user_cache, "%s/.cache/nya", home);
+		strs_add(&c->cachedirs, user_cache);
+		char user_nyacache[4096];
+		snprintf(user_nyacache, sizeof user_nyacache, "%s/.cache/nya", home);
+		free(c->nyacache);
+		c->nyacache = xstrdup(user_nyacache);
+		char user_log[4096];
+		snprintf(user_log, sizeof user_log, "%s/.cache/nya/nya.log", home);
+		free(c->logfile);
+		c->logfile = xstrdup(user_log);
+		set_logfile(c->logfile);
+		/* ensure dirs exist */
+		mkdir_p(c->dbpath, 0755);
+		mkdir_p(c->nyacache, 0755);
+		char user_bin[4096];
+		snprintf(user_bin, sizeof user_bin, "%s/.local/bin", home);
+		mkdir_p(user_bin, 0755);
+	}
 	if (cl.op == 'c') {
 		print_config(c);
 		config_free(c);
 		strs_free(&cl.targets);
 		return 0;
 	}
-	if (geteuid() != 0 && strcmp(c->rootdir, "/") == 0) {
+	if (!g_user_mode && geteuid() != 0 && strcmp(c->rootdir, "/") == 0) {
 		int need_root = 0;
 		if (cl.op == 'R' || cl.op == 'U') need_root = 1;
 		else if (cl.op == 'S') need_root = cl.y || cl.u || cl.cclean > 0 || (cl.targets.n > 0 && !cl.s && cl.i == 0);
@@ -813,7 +856,7 @@ int cli_main(int argc, char **argv) {
 				}
 			}
 			if (t.nadd == 0 && t.nrm == 0) {
-				msg("there is nothing to do");
+				msg("there is nothing to do mreow~");
 				txn_free(&t);
 			} else {
 				rc = txn_run(c, &t, 2);
@@ -1079,5 +1122,7 @@ int cli_main(int argc, char **argv) {
 	}
 	config_free(c);
 	strs_free(&cl.targets);
+	/* nya kaomoji for operation result */
+	if (rc == 0) printf("\n%s:3 mreow~ %soperation succeeded!\n", col_green(), col_reset());
 	return rc;
 }
