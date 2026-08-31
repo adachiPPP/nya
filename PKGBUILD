@@ -1,7 +1,7 @@
 pkgname=nya
-pkgver=3.0.0
+pkgver=3.1.0
 pkgrel=2
-pkgdesc="A pacman-compatible package manager written in C, with AUR, nix and flatpak support"
+pkgdesc="A pacman-compatible feature packed lightweight package manager written in C, with AUR, nix searching and flatpak support"
 arch=('x86_64' 'aarch64')
 url="https://github.com/adachiPPP/nya"
 license=('custom')
