@@ -1,5 +1,6 @@
 #include "nya.h"
 #include <curl/curl.h>
+#include <time.h>
 
 static void set_proxy(CURL *h) {
 	const char *p = getenv("https_proxy");
@@ -139,6 +140,12 @@ static const char *url_basename(const char *u) {
 }
 
 static int draw_progress(pj *js, int n) {
+	static long long last_us = -1;
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	long long now_us = (long long)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+	if (last_us >= 0 && now_us - last_us < 50000) return 0;
+	last_us = now_us;
 	long long now = 0, all = 0;
 	int i;
 	for (i = 0; i < n; i++) {
@@ -371,7 +378,6 @@ int pkg_verify_file(config *c, pkg *p, const char *path) {
 	}
 	return 0;
 }
-
 int download_pkg(config *c, pkg *p, char *outpath, size_t outlen) {
 	char cached[4096];
 	if (p->filename && cache_find(c, p->filename, cached, sizeof cached) == 0) {

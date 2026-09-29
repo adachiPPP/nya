@@ -55,6 +55,10 @@ static int fp_capture(char *const argv[], char **out) {
 	return rc;
 }
 
+static int fp_row_matches(const char *name, const char *desc, const char *app,
+                          const char **terms, int n);
+static char *fp_search_cache(void);
+
 int fp_run(int argc, char **argv) {
 	if (argc < 1) {
 		error("flatpak operation required: nya -fp search|install|remove|list|update|info <app>...");
@@ -83,57 +87,141 @@ int fp_run(int argc, char **argv) {
 	return rc;
 }
 
+#define FP_CACHE_TTL 1800
+
+static char *fp_search_cache(void) {
+	const char *home = getenv("HOME");
+	char cachef[4600];
+	if (home && *home) snprintf(cachef, sizeof cachef, "%s/.cache/nya/flatpak-apps.tsv", home);
+	else snprintf(cachef, sizeof cachef, "/tmp/nya-flatpak-apps-%ld.tsv", (long)geteuid());
+	struct stat st;
+	if (stat(cachef, &st) == 0 &&
+	    (long long)time(NULL) - (long long)st.st_mtime < FP_CACHE_TTL) {
+		char *data = read_file(cachef, NULL);
+		if (data) return data;
+	}
+	char *argv[] = { (char *)"flatpak", (char *)"remote-ls", (char *)"--app",
+	                 (char *)"--columns=application,name,description,version", NULL };
+	char *out = NULL;
+	if (fp_capture(argv, &out) != 0 || !out) {
+		free(out);
+		return read_file(cachef, NULL);
+	}
+	char dir[4600];
+	if (home && *home) snprintf(dir, sizeof dir, "%s/.cache/nya", home);
+	else snprintf(dir, sizeof dir, "/tmp");
+	mkdir_p(dir, 0755);
+	write_file(cachef, out, (long)strlen(out), 0644);
+	return out;
+}
+
+static int fp_row_matches(const char *name, const char *desc, const char *app,
+                          const char **terms, int n) {
+	int i;
+	for (i = 0; i < n; i++) {
+		if (strcasestr(name, terms[i]) || strcasestr(desc, terms[i]) || strcasestr(app, terms[i]))
+			continue;
+		int hit = 0;
+		const char *sep = " -.";
+		char *copy = xstrdup(app);
+		char *save = NULL;
+		for (char *tok = strtok_r(copy, sep, &save); tok; tok = strtok_r(NULL, sep, &save)) {
+			if (strcasestr(tok, terms[i]) || strcasestr(terms[i], tok)) {
+				hit = 1;
+				break;
+			}
+		}
+		free(copy);
+		if (!hit) return 0;
+	}
+	return 1;
+}
+
+static int fp_row_score(const char *name, const char *desc, const char *app,
+                        const char **terms, int n) {
+	int i;
+	int best = 0;
+	for (i = 0; i < n; i++) {
+		int s;
+		const char *seg = strrchr(app, '.');
+		seg = seg ? seg + 1 : app;
+		if (strncasecmp(seg, terms[i], strlen(terms[i])) == 0) s = 0;
+		else if (strcasestr(app, terms[i]) || strcasestr(name, terms[i])) s = 1;
+		else if (strcasestr(desc, terms[i])) s = 2;
+		else s = 3;
+		if (s > best) best = s;
+	}
+	return best;
+}
+
+typedef struct {
+	const char *app;
+	const char *name;
+	const char *desc;
+	const char *ver;
+	int score;
+} fp_row;
+
+static int fp_row_cmp(const void *a, const void *b) {
+	const fp_row *x = a, *y = b;
+	if (x->score != y->score) return x->score - y->score;
+	size_t xl = strlen(x->name), yl = strlen(y->name);
+	if (xl != yl) return (int)xl - (int)yl;
+	return strcmp(x->app, y->app);
+}
+
 int fp_search(config *c, const char **terms, int n) {
 	(void)c;
 	if (!fp_available()) return 0;
-	char **argv = xcalloc(n + 4, sizeof *argv);
-	argv[0] = "flatpak";
-	argv[1] = "search";
-	argv[2] = "--columns=name,description,application,version,remotes";
-	int i;
-	for (i = 0; i < n; i++) argv[i + 3] = (char *)terms[i];
-	argv[n + 3] = NULL;
-	char *out;
-	if (fp_capture(argv, &out) != 0) {
-		free(argv);
-		free(out);
-		return 0;
-	}
-	free(argv);
-	int count = 0, first = 1;
+	char *out = fp_search_cache();
+	if (!out) return 0;
+	fp_row *rows = NULL;
+	int nrows = 0, cap = 0;
+	hmap *seen = hmap_new(1 << 14);
 	char *line = out;
 	while (line && *line) {
 		char *nl = strchr(line, '\n');
 		if (nl) *nl = '\0';
-		int header = first && (strncmp(line, "Name\t", 5) == 0 || strstr(line, "Application ID") != NULL);
-		if (!header) {
-			char *f[5] = {0};
-			int fi = 0;
-			char *p = line;
-			while (p && fi < 5) {
-				f[fi++] = p;
-				char *t = strchr(p, '\t');
-				if (!t) break;
-				*t = '\0';
-				p = t + 1;
-			}
-			const char *name = f[0] ? f[0] : "";
-			const char *desc = f[1] ? f[1] : "";
-			const char *app = f[2] ? f[2] : "";
-			const char *ver = f[3] ? f[3] : "";
-			if (app[0]) {
-				printf("%sflatpak/%s %s%s%s%s\n", col_yellow(), app, col_reset(), col_bold(), ver, col_reset());
-				if (desc[0]) printf("    %s\n", desc);
-				count++;
-			}
-			(void)name;
+		char *f[5] = {0};
+		int fi = 0;
+		char *p = line;
+		while (p && fi < 5) {
+			f[fi++] = p;
+			char *t = strchr(p, '\t');
+			if (!t) break;
+			*t = '\0';
+			p = t + 1;
 		}
-		first = 0;
+		const char *app = f[0] ? f[0] : "";
+		const char *name = f[1] ? f[1] : "";
+		const char *desc = f[2] ? f[2] : "";
+		const char *ver = f[3] ? f[3] : "";
+		if (app[0] && !hmap_has(seen, app) && fp_row_matches(name, desc, app, terms, n)) {
+			hmap_put(seen, app, (void *)1);
+			if (nrows == cap) {
+				cap = cap ? cap * 2 : 32;
+				rows = xrealloc(rows, cap * sizeof *rows);
+			}
+			rows[nrows].app = app;
+			rows[nrows].name = name;
+			rows[nrows].desc = desc;
+			rows[nrows].ver = ver;
+			rows[nrows].score = fp_row_score(name, desc, app, terms, n);
+			nrows++;
+		}
 		if (!nl) break;
 		line = nl + 1;
 	}
+	qsort(rows, nrows, sizeof *rows, fp_row_cmp);
+	int i;
+	for (i = 0; i < nrows; i++) {
+		printf("%sflatpak/%s %s%s%s%s\n", col_yellow(), rows[i].app, col_reset(), col_bold(), rows[i].ver, col_reset());
+		if (rows[i].desc[0]) printf("    %s\n", rows[i].desc);
+	}
+	free(rows);
+	hmap_free(seen);
 	free(out);
-	return count;
+	return nrows;
 }
 
 int fp_update(config *c) {

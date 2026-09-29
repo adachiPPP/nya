@@ -15,6 +15,7 @@ void txn_add_add(txn *t, pkg *p) {
 	int i;
 	for (i = 0; i < t->nadd; i++) {
 		if (t->add[i] == p) return;
+		if (t->add[i]->name && p->name && strcmp(t->add[i]->name, p->name) == 0) return;
 	}
 	t->add = xrealloc(t->add, (t->nadd + 1) * sizeof(pkg *));
 	t->add[t->nadd++] = p;

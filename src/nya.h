@@ -21,7 +21,7 @@
 #include <sys/file.h>
 #include <strings.h>
 
-#define NYA_VERSION "3.1.0"
+#define NYA_VERSION "4.0.0"
 
 typedef struct {
 	char **v;

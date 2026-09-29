@@ -466,6 +466,12 @@ static int aur_resolve_deps(config *c, const char *name) {
 	FILE *fp = popen(cmd, "r");
 	if (!fp) return -1;
 
+	/* collect everything first: repo deps are installed in ONE batched transaction
+	 * instead of locking/committing the db once per dependency */
+	strs repodeps;
+	memset(&repodeps, 0, sizeof repodeps);
+	strs aurdeps;
+	memset(&aurdeps, 0, sizeof aurdeps);
 	char line[1024];
 	while (fgets(line, sizeof line, fp)) {
 		char *nl = strchr(line, '\n');
@@ -476,24 +482,58 @@ static int aur_resolve_deps(config *c, const char *name) {
 		if (db_find_local(depname)) continue;
 		if (aur_dep_already(depname)) continue;
 		if (db_find_sync(depname)) {
-			txn dt;
-			txn_init(&dt, c);
-			const char *dname = depname;
-			if (txn_build_install(c, &dname, 1, &dt, NULL) == 0 && dt.nadd > 0) {
-				int saved = g_overwrite;
-				g_overwrite = 1;
-				info("Installing repo dependency %s for %s...", depname, name);
-				txn_run(c, &dt, 0);
-				g_overwrite = saved;
-			} else {
-				txn_free(&dt);
-			}
+			if (!strs_has(&repodeps, depname)) strs_add(&repodeps, depname);
 		} else if (aur_pkg_exists(c, depname)) {
-			info("Resolving AUR dependency %s for %s...", depname, name);
-			aur_resolve_and_build(c, depname);
+			if (!strs_has(&aurdeps, depname)) strs_add(&aurdeps, depname);
 		}
 	}
 	pclose(fp);
+
+	if (repodeps.n > 0) {
+		int i;
+		for (i = 0; i < repodeps.n; i++) {
+			info("Installing repo dependency %s for %s...", repodeps.v[i], name);
+		}
+		txn dt;
+		txn_init(&dt, c);
+		int rc = 0;
+		if (txn_build_install(c, (const char **)repodeps.v, repodeps.n, &dt, NULL) != 0 || dt.nadd == 0) {
+			rc = -1;
+		} else {
+			int i, k;
+			for (i = 0; i < repodeps.n; i++) {
+				depspec d;
+				char dname[256];
+				dname[0] = '\0';
+				if (depspec_parse(repodeps.v[i], &d) == 0 && d.name) {
+					snprintf(dname, sizeof dname, "%s", d.name);
+					depspec_free(&d);
+				}
+				for (k = 0; k < dt.nadd; k++) {
+					if (!dt.add[k]->is_dep && dt.add[k]->name && dname[0] && strcmp(dt.add[k]->name, dname) == 0) {
+						dt.add[k]->is_dep = 1;
+						dt.add[k]->reason = 1;
+					}
+				}
+			}
+			int saved = g_overwrite;
+			g_overwrite = 1;
+			rc = txn_run(c, &dt, 0);
+			g_overwrite = saved;
+		}
+		txn_free(&dt);
+		strs_free(&repodeps);
+		if (rc != 0) return -1;
+	} else {
+		strs_free(&repodeps);
+	}
+
+	int i;
+	for (i = 0; i < aurdeps.n; i++) {
+		info("Resolving AUR dependency %s for %s...", aurdeps.v[i], name);
+		aur_resolve_and_build(c, aurdeps.v[i]);
+	}
+	strs_free(&aurdeps);
 	return 0;
 }
 

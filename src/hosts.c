@@ -902,11 +902,68 @@ static void host_uninstall_local(config *c, pkg *p) {
 	db_remove_local(c, p->name, p->version);
 }
 
-/* install a host's [dependencies] through the normal chain (repos -> hosts -> aur),
- * resolving each one the same way 'nya install' would. returns 0 when all deps are
- * installed or already satisfied. */
 static int host_install_deps(config *c, const char *name, host_recipe *r) {
+	/* pass 1: batch every missing dependency that lives in a configured repo */
+	strs batch;
+	memset(&batch, 0, sizeof batch);
 	int i;
+	for (i = 0; i < r->dependencies.n; i++) {
+		const char *dep = r->dependencies.v[i];
+		if (!*dep || *dep == '#') continue;
+		depspec d;
+		if (depspec_parse(dep, &d) != 0) continue;
+		char *dname = d.name;			if (d.mod && dname) {
+				char *colon = strchr(dname, ':');
+			if (colon) *colon = '\0';
+		}
+		int in_repo = db_find_sync(dname) != NULL;
+		depspec_free(&d);
+		if (!in_repo) continue;
+		if (db_find_local(dname)) continue;
+		if (!strs_has(&batch, dep)) strs_add(&batch, dep);
+	}
+	if (batch.n > 0) {
+		int j;
+		for (j = 0; j < batch.n; j++) {
+			info("Installing dependency %s for host %s...", batch.v[j], name);
+		}
+		txn t;
+		txn_init(&t, c);
+		strs notfound;
+		memset(&notfound, 0, sizeof notfound);
+		int rc = 0;
+		if (txn_build_install(c, (const char **)batch.v, batch.n, &t, &notfound) != 0 || notfound.n > 0) {
+			rc = -1;
+		} else {
+			int k;
+			for (j = 0; j < batch.n; j++) {
+				depspec d;
+				char dname[256];
+				dname[0] = '\0';
+				if (depspec_parse(batch.v[j], &d) == 0 && d.name) {
+					snprintf(dname, sizeof dname, "%s", d.name);
+					depspec_free(&d);
+				}
+				for (k = 0; k < t.nadd; k++) {
+					if (!t.add[k]->is_dep && t.add[k]->name && dname[0] && strcmp(t.add[k]->name, dname) == 0) {
+						t.add[k]->is_dep = 1;
+						t.add[k]->reason = 1;
+					}
+				}
+			}
+			if (t.nadd == 0 || txn_run(c, &t, 0) != 0) rc = -1;
+		}
+		strs_free(&notfound);
+		txn_free(&t);
+		strs_free(&batch);
+		if (rc != 0) {
+			error("failed to install host dependencies for %s", name);
+			return -1;
+		}
+	} else {
+		strs_free(&batch);
+	}
+	/* pass 2: whatever is left (host/aur-only deps) through the per-dep chain */
 	for (i = 0; i < r->dependencies.n; i++) {
 		const char *dep = r->dependencies.v[i];
 		if (!*dep || *dep == '#') continue;
@@ -1334,6 +1391,22 @@ static void host_repo_slug(const char *url, char *out, size_t n) {
 	if (o == 0) snprintf(out, n, "hosts");
 }
 
+static int host_term_match(const char *name, const char *desc, const char *term) {
+	if (strcasestr(name, term) || (desc && strcasestr(desc, term))) return 1;
+	char *copy = xstrdup(name);
+	char *save = NULL;
+	int hit = 0;
+	for (char *tok = strtok_r(copy, " -_.", &save); tok; tok = strtok_r(NULL, " -_.", &save)) {
+		if (strcasestr(tok, term)) {
+			hit = 1;
+			break;
+		}
+	}
+	free(copy);
+	return hit;
+}
+
+static int host_term_match(const char *name, const char *desc, const char *term);
 static int host_search_index(config *c, host_entry *e, int n, const char **terms, int nt) {
 	int hits = 0;
 	int i;
@@ -1343,12 +1416,9 @@ static int host_search_index(config *c, host_entry *e, int n, const char **terms
 		int matched = 1;
 		int j;
 		for (j = 0; j < nt; j++) {
-			int m = strcasestr(e[i].name, terms[j]) != NULL ||
-			        (e[i].desc && strcasestr(e[i].desc, terms[j]) != NULL);
-			if (!m) {
-				matched = 0;
-				break;
-			}
+			if (host_term_match(e[i].name, e[i].desc, terms[j])) continue;
+			matched = 0;
+			break;
 		}
 		if (!matched) continue;
 		const char *ver = (e[i].version && *e[i].version) ? e[i].version : "1";
@@ -1422,12 +1492,9 @@ static int host_search_dir(config *c, const char *root, const char **terms, int 
 		int matched = 1;
 		int j;
 		for (j = 0; j < n; j++) {
-			int m = strcasestr(name, terms[j]) != NULL ||
-			        (r.desc && strcasestr(r.desc, terms[j]) != NULL);
-			if (!m) {
-				matched = 0;
-				break;
-			}
+			if (host_term_match(name, r.desc, terms[j])) continue;
+			matched = 0;
+			break;
 		}
 		if (!matched) {
 			host_recipe_free(&r);

@@ -1,4 +1,86 @@
 #include "nya.h"
+#include <zlib.h>
+
+static char *maybe_inflate_mtree(const char *data, long len, long *outlen) {
+	*outlen = len;
+	if (len >= 2 && (unsigned char)data[0] == 0x1f && (unsigned char)data[1] == 0x8b) {
+		z_stream zs;
+		memset(&zs, 0, sizeof zs);
+		if (inflateInit2(&zs, 15 + 32) != Z_OK) return NULL;
+		size_t cap = (size_t)len * 8 + 65536;
+		char *out = xmalloc(cap);
+		size_t olen = 0;
+		zs.next_in = (Bytef *)(size_t)data;
+		zs.avail_in = (uInt)len;
+		int ret = Z_OK;
+		for (;;) {
+			if (olen == cap) {
+				cap *= 2;
+				out = xrealloc(out, cap);
+			}
+			zs.next_out = (Bytef *)out + olen;
+			zs.avail_out = (uInt)(cap - olen);
+			ret = inflate(&zs, Z_NO_FLUSH);
+			olen = cap - zs.avail_out;
+			if (ret == Z_STREAM_END) break;
+			if (ret != Z_OK) break;
+			if (zs.avail_in == 0) break;
+		}
+		inflateEnd(&zs);
+		if (ret != Z_STREAM_END) {
+			free(out);
+			return NULL;
+		}
+		out = xrealloc(out, olen + 1);
+		out[olen] = '\0';
+		*outlen = (long)olen;
+		return out;
+	}
+	return NULL;
+}
+
+static void mtree_files_into_pkg(pkg *p) {
+	const char *ptr = p->mtree_data;
+	const char *end = p->mtree_data + p->mtree_len;
+	while (ptr < end) {
+		const char *nl = memchr(ptr, '\n', end - ptr);
+		size_t l = nl ? (size_t)(nl - ptr) : (size_t)(end - ptr);
+		char *line = xstrndup(ptr, l);
+		char *t = trim(line);
+		if (*t && *t != '#' && !startswith(t, "/set") && !startswith(t, "/unset")) {
+			char *sp = strchr(t, ' ');
+			if (!sp) sp = strchr(t, '\t');
+			if (sp) {
+				*sp = '\0';
+				char *path = trim(t);
+				if (startswith(path, "./")) path += 2;
+				if (*path && !(strchr(path, '/') == NULL && path[0] == '.')) {
+					if (strstr(sp + 1, "type=dir") != NULL) {
+						size_t pl = strlen(path);
+						if (pl == 0 || path[pl - 1] != '/') {
+							char *ws = xmalloc(pl + 2);
+							sprintf(ws, "%s/", path);
+							if (!strs_has(&p->files, ws)) {
+								strs_add_own(&p->files, ws);
+								p->nfiles++;
+							} else {
+								free(ws);
+							}
+						} else if (!strs_has(&p->files, path)) {
+							strs_add(&p->files, path);
+							p->nfiles++;
+						}
+					} else if (!strs_has(&p->files, path)) {
+						strs_add(&p->files, path);
+						p->nfiles++;
+					}
+				}
+			}
+		}
+		free(line);
+		ptr = nl ? nl + 1 : end;
+	}
+}
 
 static int rpmvercmp(const char *a, const char *b) {
 	char oldch1, oldch2;
@@ -248,6 +330,7 @@ int pkg_scan_archive(config *c, const char *path, pkg *p) {
 	tar_it t;
 	tar_init(&t, r);
 	tar_entry e;
+	int have_mtree = 0;
 	while (tar_next(&t, &e) > 0) {
 		char clean[4096];
 		if (tar_safe_path(e.name, clean, sizeof clean) != 0) {
@@ -258,15 +341,20 @@ int pkg_scan_archive(config *c, const char *path, pkg *p) {
 		long len = 0;
 		char *data = NULL;
 		if (e.size > 0) {
-			data = xmalloc(e.size + 1);
-			long off = 0;
-			while (off < e.size) {
-				long got = tar_read(&t, data + off, e.size - off);
-				if (got <= 0) break;
-				off += got;
+			if (is_meta || !have_mtree) {
+				data = xmalloc(e.size + 1);
+				long off = 0;
+				while (off < e.size) {
+					long got = tar_read(&t, data + off, e.size - off);
+					if (got <= 0) break;
+					off += got;
+				}
+				data[off] = '\0';
+				len = off;
+			} else {
+				tar_skip(&t);
+				continue;
 			}
-			data[off] = '\0';
-			len = off;
 		} else {
 			tar_skip(&t);
 		}
@@ -278,24 +366,37 @@ int pkg_scan_archive(config *c, const char *path, pkg *p) {
 					return -1;
 				}
 			} else if (strcmp(clean, ".MTREE") == 0 && data) {
+				long infl = 0;
+				char *inflated = maybe_inflate_mtree(data, len, &infl);
+				if (inflated) {
+					free(data);
+					data = inflated;
+					len = infl;
+				}
 				free(p->mtree_data);
 				p->mtree_data = data;
 				p->mtree_len = len;
 				p->has_mtree = 1;
 				data = NULL;
+				if (p->mtree_data && p->mtree_len > 0) {
+					strs_free(&p->files);
+					memset(&p->files, 0, sizeof p->files);
+					mtree_files_into_pkg(p);
+					have_mtree = 1;
+				}
 			} else if (strcmp(clean, ".INSTALL") == 0 && data) {
 				free(p->install_data);
 				p->install_data = data;
 				p->install_len = len;
 				data = NULL;
 			}
-		} else if (e.type == '5') {
+		} else if (!have_mtree && e.type == '5') {
 			size_t cl = strlen(clean);
 			char *withslash = xmalloc(cl + 2);
 			sprintf(withslash, "%s%s", clean, (cl > 0 && clean[cl - 1] == '/') ? "" : "/");
 			if (!strs_has(&p->files, withslash)) strs_add_own(&p->files, withslash);
 			p->nfiles++;
-		} else if (e.type == '0' || e.type == '1' || e.type == '2' || e.type == '6') {
+		} else if (!have_mtree && (e.type == '0' || e.type == '1' || e.type == '2' || e.type == '6')) {
 			if (!strs_has(&p->files, clean)) strs_add(&p->files, clean);
 			p->nfiles++;
 		}

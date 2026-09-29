@@ -416,13 +416,13 @@ NYA_CONF="$ROOT/auto/nya.conf" $NYA config >/dev/null 2>&1 || true
 ok "first-use config generation"
 
 echo "== version/help =="
-$NYA --version | grep -q "3.1.0" || fail "--version"
+$NYA --version | grep -q "4.0.0" || fail "--version"
 $NYA --help | grep -q "nya install" || fail "--help"
 ok "version/help"	echo "== sync vs update =="
 	mkdir -p "$ROOT/fakebin"
 	cat > "$ROOT/fakebin/flatpak" <<'EOF'
 #!/usr/bin/env bash
-echo -e "Fake App\tA fake flatpak app\torg.fake.FakeApp\t1.0\tflathub"
+echo -e "org.fake.FakeApp\tFake App\tA fake flatpak app\t1.0"
 EOF
 	chmod +x "$ROOT/fakebin/flatpak"
 	pkg_hello 1.2-1
@@ -448,7 +448,8 @@ searchhost = false
 [extra]
 Server = file://$ROOT/repo
 EOF
-	PATH="$ROOT/fakebin:$PATH" $NYA --config "$ROOT/search.conf" search org.fake 2>&1 | grep -q "flatpak/org.fake.FakeApp" || fail "searchflatpak not searched"
+	mkdir -p "$ROOT/fphome"
+	PATH="$ROOT/fakebin:$PATH" HOME="$ROOT/fphome" $NYA --config "$ROOT/search.conf" search org.fake 2>&1 | grep -q "flatpak/org.fake.FakeApp" || fail "searchflatpak not searched"
 	ok "searchflatpak = true"
 
 	echo "== reinstall same version =="

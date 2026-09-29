@@ -143,6 +143,7 @@ static int noupgrade_match(config *c, const char *relpath) {
 }
 
 static int write_file_from_tar(tar_it *t, tar_entry *e, const char *dest, char *shaout) {
+	int want_sha = shaout != NULL;
 	int fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, e->mode & 0777);
 	if (fd < 0 && errno == ETXTBSY) {
 		unlink(dest);
@@ -153,14 +154,20 @@ static int write_file_from_tar(tar_it *t, tar_entry *e, const char *dest, char *
 		return -1;
 	}
 	sha256_t ctx;
-	sha256_init(&ctx);
+	int have_ctx = 0;
 	char buf[65536];
 	long long remain = e->size;
 	while (remain > 0) {
 		long n = remain > (long long)sizeof buf ? (long long)sizeof buf : remain;
 		long got = tar_read(t, buf, n);
 		if (got <= 0) break;
-		sha256_update(&ctx, buf, got);
+		if (want_sha) {
+			if (!have_ctx) {
+				sha256_init(&ctx);
+				have_ctx = 1;
+			}
+			sha256_update(&ctx, buf, got);
+		}
 		long off = 0;
 		while (off < got) {
 			ssize_t w = write(fd, buf + off, got - off);
@@ -174,7 +181,10 @@ static int write_file_from_tar(tar_it *t, tar_entry *e, const char *dest, char *
 		remain -= got;
 	}
 	close(fd);
-	sha256_final(&ctx, shaout);
+	if (want_sha) {
+		if (!have_ctx) sha256_init(&ctx);
+		sha256_final(&ctx, shaout);
+	}
 	return 0;
 }
 
@@ -236,6 +246,7 @@ static int extract_pkg(config *c, pkg *p, const char *label) {
 			int is_noup = noupgrade_match(c, clean);
 			int exists = lstat(rooted, &(struct stat){0}) == 0;
 			char sha_in[65];
+			char *sha_arg = is_backup ? sha_in : NULL;
 			if (is_backup && exists) {
 				char tmpl[4300];
 				snprintf(tmpl, sizeof tmpl, "%s/.nya-tmp-XXXXXX", c->rootdir);
@@ -251,7 +262,7 @@ static int extract_pkg(config *c, pkg *p, const char *label) {
 					continue;
 				}
 				close(tfd);
-				if (write_file_from_tar(&t, &e, tmpl, sha_in) != 0) {
+				if (write_file_from_tar(&t, &e, tmpl, sha_arg) != 0) {
 					unlink(tmpl);
 					rc = -1;
 					continue;
@@ -277,7 +288,7 @@ static int extract_pkg(config *c, pkg *p, const char *label) {
 				apply_meta(pacnew, &e, owner);
 				warn("%s installed as %s.pacnew", rooted, rooted);
 			} else {
-				if (write_file_from_tar(&t, &e, rooted, sha_in) != 0) {
+				if (write_file_from_tar(&t, &e, rooted, sha_arg) != 0) {
 					rc = -1;
 					continue;
 				}
@@ -490,6 +501,19 @@ static int install_pkg(config *c, pkg *p, txn *t, const char *label) {
 	return 0;
 }
 
+static int cached_file_ok(pkg *p, const char *path) {
+	if (p->csize > 0) {
+		struct stat st;
+		if (stat(path, &st) != 0) return 0;
+		if (st.st_size != p->csize) {
+			warn("cached file %s has wrong size, re-fetching", path);
+			return 0;
+		}
+		return 1;
+	}
+	return pkg_verify_file(NULL, p, path) == 0;
+}
+
 int txn_download(config *c, txn *t) {
 	if (t->nadd == 0) return 0;
 	if (c->cachedirs.n > 0) mkdir_p(c->cachedirs.v[0], 0755);
@@ -504,7 +528,7 @@ int txn_download(config *c, txn *t) {
 		if (!p->repo) continue;
 		char cached[4096];
 		if (cache_find(c, p->filename, cached, sizeof cached) == 0) {
-			if (pkg_verify_file(c, p, cached) == 0) {
+			if (cached_file_ok(p, cached)) {
 				free(p->filename);
 				p->filename = xstrdup(cached);
 				continue;
@@ -587,7 +611,6 @@ static void fmt_summary_line(const char *label, long long bytes, char *out, size
 }
 
 int txn_print_summary(config *c, txn *t, int mode) {
-	(void)c;
 	long long dl = 0, isz = 0, rsz = 0;
 	int total = t->nadd + t->nrm;
 	char list[16384] = "";
@@ -596,7 +619,17 @@ int txn_print_summary(config *c, txn *t, int mode) {
 		char tmp[512];
 		snprintf(tmp, sizeof tmp, "%s%s-%s ", list[0] ? " " : "", t->add[i]->name, t->add[i]->version);
 		if (strlen(list) + strlen(tmp) < sizeof list) strncat(list, tmp, sizeof list - strlen(list) - 1);
-		dl += t->add[i]->csize;
+		int from_cache = 0;
+		if (c && c->cachedirs.n > 0 && t->add[i]->filename && *t->add[i]->filename) {
+			if (t->add[i]->filename[0] == '/') {
+				from_cache = is_file(t->add[i]->filename) != 0;
+			} else {
+				char cpath[4600];
+				snprintf(cpath, sizeof cpath, "%s/%s", c->cachedirs.v[0], t->add[i]->filename);
+				from_cache = is_file(cpath) != 0;
+			}
+		}
+		if (!from_cache) dl += t->add[i]->csize;
 		isz += t->add[i]->isize;
 	}
 	for (i = 0; i < t->nrm; i++) {
