@@ -343,7 +343,7 @@ static int extract_pkg(config *c, pkg *p, const char *label) {
 	return rc;
 }
 
-static void remove_old_files(config *c, pkg *p, int keep_backup) {
+static void remove_old_files(config *c, pkg *p, const pkg *newp, int keep_backup) {
 	int i;
 	for (i = 0; i < p->files.n; i++) {
 		const char *f = p->files.v[i];
@@ -351,6 +351,8 @@ static void remove_old_files(config *c, pkg *p, int keep_backup) {
 		if (fl > 0 && f[fl - 1] == '/') continue;
 		if (keep_backup && strs_has(&p->backup, f)) continue;
 		if (noupgrade_match(c, f)) continue;
+		if (db_file_has_other_owner(f, p->name)) continue;
+		if (newp && strs_has(&newp->files, f)) continue;
 		char rooted[4300];
 		snprintf(rooted, sizeof rooted, "%s/%s", c->rootdir, f);
 		struct stat st;
@@ -362,6 +364,8 @@ static void remove_old_files(config *c, pkg *p, int keep_backup) {
 		const char *f = p->files.v[i];
 		size_t fl = strlen(f);
 		if (fl == 0 || f[fl - 1] != '/') continue;
+		if (db_file_has_other_owner(f, p->name)) continue;
+		if (newp && strs_has(&newp->files, f)) continue;
 		char rooted[4300];
 		snprintf(rooted, sizeof rooted, "%s/%s", c->rootdir, f);
 		rmdir(rooted);
@@ -386,6 +390,7 @@ static int remove_pkg(config *c, pkg *p, int nosave) {
 		struct stat st;
 		if (lstat(rooted, &st) != 0) continue;
 		if (S_ISDIR(st.st_mode)) continue;
+		if (db_file_has_other_owner(f, p->name)) continue;
 		int is_backup = strs_has(&p->backup, f);
 		if (is_backup && !nosave && S_ISREG(st.st_mode)) {
 			char hex[65];
@@ -407,6 +412,7 @@ static int remove_pkg(config *c, pkg *p, int nosave) {
 		const char *f = p->files.v[i];
 		size_t fl = strlen(f);
 		if (fl == 0 || f[fl - 1] != '/') continue;
+		if (db_file_has_other_owner(f, p->name)) continue;
 		char rooted[4300];
 		snprintf(rooted, sizeof rooted, "%s/%s", c->rootdir, f);
 		rmdir(rooted);
@@ -471,7 +477,7 @@ static int install_pkg(config *c, pkg *p, txn *t, const char *label) {
 		if (p->install_data && p->install_len > 0) {
 			run_scriptlet(c, p->install_data, p->install_len, "pre_upgrade", p->version, old->version);
 		}
-		remove_old_files(c, old, 1);
+		remove_old_files(c, old, p, 1);
 	} else {
 		if (p->install_data && p->install_len > 0) {
 			run_scriptlet(c, p->install_data, p->install_len, "pre_install", p->version, NULL);
@@ -958,17 +964,24 @@ int run_hooks(config *c, txn *t, int pre) {
 			}
 			if (matched && hf.execs.n > 0) {
 				char tbuf[8192] = "";
-				char fbuf[65536] = "";
+				char *fbuf = NULL;
 				char *payload = NULL;
 				int x;
+				size_t flen = 0;
+				for (x = 0; x < files_s.n; x++) flen += strlen(files_s.v[x]) + 1;
+				fbuf = xmalloc(flen + 1);
+				size_t foff = 0;
 				for (x = 0; x < targets_s.n; x++) {
 					if (tbuf[0]) strncat(tbuf, " ", sizeof tbuf - strlen(tbuf) - 1);
 					strncat(tbuf, targets_s.v[x], sizeof tbuf - strlen(tbuf) - 1);
 				}
 				for (x = 0; x < files_s.n; x++) {
-					strncat(fbuf, files_s.v[x], sizeof fbuf - strlen(fbuf) - 1);
-					strncat(fbuf, "\n", sizeof fbuf - strlen(fbuf) - 1);
+					size_t l = strlen(files_s.v[x]);
+					memcpy(fbuf + foff, files_s.v[x], l);
+					foff += l;
+					fbuf[foff++] = '\n';
 				}
+				fbuf[foff] = '\0';
 				if (hf.needs_targets) {
 					size_t plen = 1;
 					for (x = 0; x < files_rel_s.n; x++) plen += strlen(files_rel_s.v[x]) + 1;

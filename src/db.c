@@ -5,6 +5,48 @@ int g_nsync = 0;
 pkg **g_local = NULL;
 int g_nlocal = 0;
 hmap *g_owner = NULL;
+static hmap *g_owner_multi = NULL;
+
+static void owner_multi_add(const char *f, const char *name) {
+	if (!g_owner_multi) g_owner_multi = hmap_new(1 << 15);
+	strs *l = hmap_get(g_owner_multi, f);
+	if (!l) {
+		l = xcalloc(1, sizeof *l);
+		hmap_put(g_owner_multi, f, l);
+	}
+	if (!strs_has(l, name)) strs_add(l, name);
+}
+
+int db_file_has_other_owner(const char *relpath, const char *pkgname) {
+	if (!g_owner_multi) return 0;
+	strs *l = hmap_get(g_owner_multi, relpath);
+	if (!l) return 0;
+	int i;
+	for (i = 0; i < l->n; i++) {
+		if (strcmp(l->v[i], pkgname) != 0) return 1;
+	}
+	return 0;
+}
+
+void db_owner_map_free(void) {
+	if (g_owner_multi) {
+		int i;
+		for (i = 0; i < g_owner_multi->n; i++) {
+			hnode *node = g_owner_multi->buckets[i];
+			while (node) {
+				strs_free((strs *)node->v);
+				free(node->v);
+				node = node->next;
+			}
+		}
+		hmap_free(g_owner_multi);
+		g_owner_multi = NULL;
+	}
+	if (g_owner) {
+		hmap_free(g_owner);
+		g_owner = NULL;
+	}
+}
 
 static void db_add_strs(strs *s, const char *val) {
 	strs tmp;
@@ -56,6 +98,28 @@ void pkg_free(pkg *p) {
 }
 
 static hmap *g_sync_idx;
+static hmap *g_sync_name = NULL;
+static hmap *g_local_idx = NULL;
+static hmap *g_local_dir_idx = NULL;
+
+static void local_index_add(pkg *p) {
+	if (!g_local_idx || !p->name) return;
+	if (!hmap_has(g_local_idx, p->name)) hmap_put(g_local_idx, p->name, p);
+	if (p->name && p->version) {
+		char tmp[1100];
+		snprintf(tmp, sizeof tmp, "%s-%s", p->name, p->version);
+		if (!hmap_has(g_local_dir_idx, tmp)) hmap_put(g_local_dir_idx, tmp, p);
+	}
+}
+
+static pkg *local_find_idx(const char *name) {
+	if (g_local_idx) return hmap_get(g_local_idx, name);
+	int i;
+	for (i = 0; i < g_nlocal; i++) {
+		if (g_local[i]->name && strcmp(g_local[i]->name, name) == 0) return g_local[i];
+	}
+	return NULL;
+}
 
 static void sync_index_add(pkg *p) {
 	if (!g_sync_idx || !p->name || !p->version || !p->repo) return;
@@ -68,11 +132,15 @@ static void sync_add(pkg *p) {
 	g_sync = xrealloc(g_sync, (g_nsync + 1) * sizeof(pkg *));
 	g_sync[g_nsync++] = p;
 	sync_index_add(p);
+	if (g_sync_name && p->name && !hmap_has(g_sync_name, p->name)) hmap_put(g_sync_name, p->name, p);
 }
 
 static void local_add(pkg *p) {
+	if (!g_local_idx) g_local_idx = hmap_new(1 << 12);
+	if (!g_local_dir_idx) g_local_dir_idx = hmap_new(1 << 12);
 	g_local = xrealloc(g_local, (g_nlocal + 1) * sizeof(pkg *));
 	g_local[g_nlocal++] = p;
+	local_index_add(p);
 }
 
 static pkg *sync_find_dir(const char *reponame, const char *dir) {
@@ -265,7 +333,10 @@ int db_load_sync(config *c, const char *dbfile, const char *reponame) {
 			tar_skip(&t);
 		}
 		if (data) {
-			if (strcmp(fname, "desc") == 0) desc_into_pkg(cur, data);
+			if (strcmp(fname, "desc") == 0) {
+				desc_into_pkg(cur, data);
+				if (g_sync_name && cur->name && !hmap_has(g_sync_name, cur->name)) hmap_put(g_sync_name, cur->name, cur);
+			}
 			else if (strcmp(fname, "files") == 0) files_into_pkg(cur, data);
 			else if (strcmp(fname, "depends") == 0) {
 				strs tmp;
@@ -285,13 +356,24 @@ int db_load_sync(config *c, const char *dbfile, const char *reponame) {
 }
 
 int db_load_local(config *c) {
+	if (g_local_idx) {
+		hmap_free(g_local_idx);
+		g_local_idx = NULL;
+	}
+	if (g_local_dir_idx) {
+		hmap_free(g_local_dir_idx);
+		g_local_dir_idx = NULL;
+	}
 	char localdir[4096];
 	snprintf(localdir, sizeof localdir, "%s/local", c->dbpath);
 	DIR *d = opendir(localdir);
 	if (!d) {
 		mkdir_p(localdir, 0755);
 		d = opendir(localdir);
-		if (!d) return -1;
+		if (!d) {
+			db_owner_map_free();
+			return -1;
+		}
 	}
 	struct dirent *de;
 	while ((de = readdir(d)) != NULL) {
@@ -306,7 +388,9 @@ int db_load_local(config *c) {
 		char *data = read_file(path, NULL);
 		if (!data) {
 			pkg_free(p);
-			continue;
+			closedir(d);
+			db_owner_map_free();
+			return -1;
 		}
 		desc_into_pkg(p, data);
 		free(data);
@@ -354,6 +438,8 @@ int db_load_all(config *c) {
 	int i;
 	if (g_sync_idx) hmap_free(g_sync_idx);
 	g_sync_idx = hmap_new(1 << 17);
+	if (g_sync_name) hmap_free(g_sync_name);
+	g_sync_name = hmap_new(1 << 17);
 	for (i = 0; i < g_nsync; i++) sync_index_add(g_sync[i]);
 	for (i = 0; i < c->nrepos; i++) {
 		char dbfile[4096];
@@ -369,6 +455,7 @@ int db_load_all(config *c) {
 }
 
 pkg *db_find_sync(const char *name) {
+	if (g_sync_name) return hmap_get(g_sync_name, name);
 	int i;
 	for (i = 0; i < g_nsync; i++) {
 		if (g_sync[i]->name && strcmp(g_sync[i]->name, name) == 0) return g_sync[i];
@@ -390,24 +477,23 @@ pkg *db_find_sync_exact(const char *repo, const char *name) {
 }
 
 pkg *db_find_local(const char *name) {
-	int i;
-	for (i = 0; i < g_nlocal; i++) {
-		if (g_local[i]->name && strcmp(g_local[i]->name, name) == 0) return g_local[i];
-	}
-	return NULL;
+	return local_find_idx(name);
 }
 
 void db_build_owner_map(void) {
-	if (g_owner) hmap_free(g_owner);
+	db_owner_map_free();
 	g_owner = hmap_new(1 << 15);
+	g_owner_multi = hmap_new(1 << 15);
 	int i, j;
 	for (i = 0; i < g_nlocal; i++) {
 		pkg *p = g_local[i];
+		if (!p->name) continue;
 		for (j = 0; j < p->files.n; j++) {
 			const char *f = p->files.v[j];
 			size_t fl = strlen(f);
-			if (fl > 0 && f[fl - 1] == '/') continue;
-			if (!hmap_has(g_owner, f)) hmap_put(g_owner, f, p->name);
+			if (fl == 0) continue;
+			if (f[fl - 1] != '/' && !hmap_has(g_owner, f)) hmap_put(g_owner, f, p->name);
+			owner_multi_add(f, p->name);
 		}
 	}
 }

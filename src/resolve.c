@@ -398,6 +398,7 @@ int txn_file_conflicts(config *c, txn *t) {
 			const char *f = p->files.v[j];
 			size_t fl = strlen(f);
 			if (fl > 0 && f[fl - 1] == '/') continue;
+			if (db_file_has_other_owner(f, p->name)) continue;
 			const char *owner = db_owner(f);
 			if (owner && strcmp(owner, p->name) != 0 && !in_rm(t, owner) && !in_add(t, owner)) {
 				if (g_overwrite) continue;

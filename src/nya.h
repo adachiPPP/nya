@@ -21,7 +21,7 @@
 #include <sys/file.h>
 #include <strings.h>
 
-#define NYA_VERSION "4.0.0"
+#define NYA_VERSION "4.1.0"
 
 typedef struct {
 	char **v;
@@ -284,6 +284,8 @@ pkg *db_find_sync_exact(const char *repo, const char *name);
 pkg *db_find_local(const char *name);
 void db_build_owner_map(void);
 const char *db_owner(const char *relpath);
+int db_file_has_other_owner(const char *relpath, const char *pkgname);
+void db_owner_map_free(void);
 int db_write_local_pkg(config *c, pkg *p);
 void db_remove_local(config *c, const char *name, const char *version);
 int db_check_corruption(config *c);

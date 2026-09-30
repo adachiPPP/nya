@@ -416,7 +416,7 @@ NYA_CONF="$ROOT/auto/nya.conf" $NYA config >/dev/null 2>&1 || true
 ok "first-use config generation"
 
 echo "== version/help =="
-$NYA --version | grep -q "4.0.0" || fail "--version"
+$NYA --version | grep -q "4.1.0" || fail "--version"
 $NYA --help | grep -q "nya install" || fail "--help"
 ok "version/help"	echo "== sync vs update =="
 	mkdir -p "$ROOT/fakebin"
@@ -691,7 +691,8 @@ EOF
 	env $HHOME $NYA --config $ROOT/hostsearch.conf -Q 2>&1 | grep -q "aliasedhost 1" || fail "aliasedhost not in local db"
 	[ -x "$ROOT/root/usr/bin/hostapp" ] || fail "aliasedhost binary missing"
 	env $HHOME $NYA --config $ROOT/hostsearch.conf remove aliasedhost --noconfirm >/dev/null 2>&1 || fail "remove aliasedhost"
-	[ ! -e "$ROOT/root/usr/bin/hostapp" ] || fail "aliasedhost not cleaned up on remove"
+	$NYA --config $ROOT/hostsearch.conf -Q 2>&1 | grep -q aliasedhost && fail "aliasedhost still in local db after remove"
+	[ -x "$ROOT/root/usr/bin/hostapp" ] || fail "shared binary should remain (hostapp still owns it)"
 	# remove the index so the later update tests use plain recipe files again
 	rm -f "$ROOT/host-repo/packages.info"
 	ok "host search via index"
