@@ -82,113 +82,99 @@ static void mtree_files_into_pkg(pkg *p) {
 	}
 }
 
-static int rpmvercmp(const char *a, const char *b) {
-	char oldch1, oldch2;
-	char *str1, *str2, *ptr1, *ptr2, *one, *two;
-	int rc = 0, isnum;
-	if (strcmp(a, b) == 0) return 0;
-	str1 = xstrdup(a);
-	str2 = xstrdup(b);
-	one = str1;
-	two = str2;
-	while (*one || *two) {
-		while (*one && !isalnum((unsigned char)*one)) one++;
-		while (*two && !isalnum((unsigned char)*two)) two++;
-		if (!(*one && *two)) break;
-		if ((one - str1) != (two - str2)) break;
-		ptr1 = one;
-		ptr2 = two;
+static int seg_cmp(const char *a, size_t al, const char *b, size_t bl) {
+	size_t m = al < bl ? al : bl;
+	int rc = memcmp(a, b, m);
+	if (rc) return rc < 0 ? -1 : 1;
+	if (al == bl) return 0;
+	return al < bl ? -1 : 1;
+}
+
+static int rpmvercmp(const char *a, size_t al, const char *b, size_t bl) {
+	const char *ae = a + al, *be = b + bl;
+	if (a == b) return 0;
+	if (al == bl && memcmp(a, b, al) == 0) return 0;
+	const char *one = a, *two = b;
+	while (one < ae || two < be) {
+		while (one < ae && !isalnum((unsigned char)*one)) one++;
+		while (two < be && !isalnum((unsigned char)*two)) two++;
+		if (!(one < ae && two < be)) break;
+		if ((one - a) != (two - b)) return (one - a) < (two - b) ? -1 : 1;
+		const char *ptr1 = one, *ptr2 = two;
+		int isnum;
 		if (isdigit((unsigned char)*ptr1)) {
-			while (*ptr1 && isdigit((unsigned char)*ptr1)) ptr1++;
-			while (*ptr2 && isdigit((unsigned char)*ptr2)) ptr2++;
+			while (ptr1 < ae && isdigit((unsigned char)*ptr1)) ptr1++;
+			while (ptr2 < be && isdigit((unsigned char)*ptr2)) ptr2++;
 			isnum = 1;
 		} else {
-			while (*ptr1 && isalpha((unsigned char)*ptr1)) ptr1++;
-			while (*ptr2 && isalpha((unsigned char)*ptr2)) ptr2++;
+			while (ptr1 < ae && isalpha((unsigned char)*ptr1)) ptr1++;
+			while (ptr2 < be && isalpha((unsigned char)*ptr2)) ptr2++;
 			isnum = 0;
 		}
-		oldch1 = *ptr1;
-		*ptr1 = '\0';
-		oldch2 = *ptr2;
-		*ptr2 = '\0';
 		if (one == ptr1) {
-			rc = strcmp(one, two);
-			if (rc) break;
+			int rc = seg_cmp(one, ptr1 - one, two, ptr2 - two);
+			if (rc) return rc;
 		}
-		if (two == ptr2) {
-			rc = isnum ? 1 : -1;
-			break;
-		}
+		if (two == ptr2) return isnum ? 1 : -1;
 		if (isnum) {
-			while (*one == '0') one++;
-			while (*two == '0') two++;
-			if (strlen(one) > strlen(two)) {
-				rc = 1;
-				break;
-			}
-			if (strlen(one) < strlen(two)) {
-				rc = -1;
-				break;
-			}
+			const char *z1 = one;
+			const char *z2 = two;
+			while (*z1 == '0') z1++;
+			while (*z2 == '0') z2++;
+			size_t l1 = (size_t)(ptr1 - z1), l2 = (size_t)(ptr2 - z2);
+			if (l1 != l2) return l1 > l2 ? 1 : -1;
+			int rc = seg_cmp(z1, l1, z2, l2);
+			if (rc) return rc;
+		} else {
+			int rc = seg_cmp(one, ptr1 - one, two, ptr2 - two);
+			if (rc) return rc;
 		}
-		rc = strcmp(one, two);
-		if (rc) break;
-		*ptr1 = oldch1;
 		one = ptr1;
-		*ptr2 = oldch2;
 		two = ptr2;
 	}
-	if (!rc) {
-		if (*one && !*two) rc = 1;
-		else if (!*one && *two) rc = -1;
+	if (one >= ae && two < be) return -1;
+	if (one < ae && two >= be) return 1;
+	return 0;
+}
+
+static void ver_split(const char *v, const char **epoch, long long *ep, const char **main, size_t *ml, const char **rel, size_t *rl) {
+	if (!v) v = "";
+	const char *colon = strchr(v, ':');
+	if (colon) {
+		*epoch = v;
+		*ep = atoll(v);
+		v = colon + 1;
+	} else {
+		*epoch = NULL;
+		*ep = 0;
 	}
-	free(str1);
-	free(str2);
-	return rc;
+	const char *dash = strrchr(v, '-');
+	if (dash) {
+		*main = v;
+		*ml = (size_t)(dash - v);
+		*rel = dash + 1;
+		*rl = strlen(dash + 1);
+	} else {
+		*main = v;
+		*ml = strlen(v);
+		*rel = "";
+		*rl = 0;
+	}
 }
 
 int vercmp(const char *a, const char *b) {
-	char *ac = xstrdup(a ? a : "");
-	char *bc = xstrdup(b ? b : "");
-	char *dash_a = strrchr(ac, '-');
-	char *dash_b = strrchr(bc, '-');
-	char rel_a[64] = "", rel_b[64] = "";
-	if (dash_a) {
-		*dash_a = '\0';
-		snprintf(rel_a, sizeof rel_a, "%s", dash_a + 1);
-	}
-	if (dash_b) {
-		*dash_b = '\0';
-		snprintf(rel_b, sizeof rel_b, "%s", dash_b + 1);
-	}
-	long long epoch_a = 0, epoch_b = 0;
-	char *colon_a = strchr(ac, ':');
-	char *colon_b = strchr(bc, ':');
-	const char *av = ac, *bv = bc;
-	if (colon_a) {
-		*colon_a = '\0';
-		epoch_a = atoll(ac);
-		av = colon_a + 1;
-	}
-	if (colon_b) {
-		*colon_b = '\0';
-		epoch_b = atoll(bc);
-		bv = colon_b + 1;
-	}
-	int rc;
-	if (epoch_a != epoch_b) {
-		rc = epoch_a < epoch_b ? -1 : 1;
-	} else {
-		rc = rpmvercmp(av, bv);
-		if (rc == 0) rc = rpmvercmp(rel_a, rel_b);
-	}
-	free(ac);
-	free(bc);
+	const char *ea, *ma, *ra, *eb, *mb, *rb;
+	long long epa, epb;
+	size_t mal, ral, mbl, rbl;
+	ver_split(a, &ea, &epa, &ma, &mal, &ra, &ral);
+	ver_split(b, &eb, &epb, &mb, &mbl, &rb, &rbl);
+	if (epa != epb) return epa < epb ? -1 : 1;
+	int rc = rpmvercmp(ma, mal, mb, mbl);
+	if (rc == 0) rc = rpmvercmp(ra, ral, rb, rbl);
 	return rc;
 }
 
-int depspec_parse(const char *s, depspec *d) {
-	memset(d, 0, sizeof *d);
+static void spec_split(const char *s, const char **name, size_t *nlen, const char **mod, size_t *mlen, const char **ver) {
 	const char *op = NULL;
 	const char *p;
 	for (p = s; *p; p++) {
@@ -197,18 +183,35 @@ int depspec_parse(const char *s, depspec *d) {
 			break;
 		}
 	}
-	if (op) {
-		const char *e = op;
-		if (e[1] == '=') e += 2;
-		else e += 1;
-		char *name = xstrndup(s, op - s);
-		d->name = xstrdup(trim(name));
-		free(name);
-		d->mod = xstrndup(op, e - op);
-		while (*e == ' ') e++;
-		d->ver = xstrdup(e);
-	} else {
-		d->name = xstrdup(s);
+	*name = s;
+	if (!op) {
+		*nlen = strlen(s);
+		*mod = NULL;
+		*mlen = 0;
+		*ver = NULL;
+		return;
+	}
+	*nlen = (size_t)(op - s);
+	while (*nlen > 0 && (s[*nlen - 1] == ' ' || s[*nlen - 1] == '\t')) (*nlen)--;
+	*mod = op;
+	if (op[1] == '=') *mlen = 2;
+	else *mlen = 1;
+	p = op + *mlen;
+	while (*p == ' ') p++;
+	*ver = p;
+}
+
+int depspec_parse(const char *s, depspec *d) {
+	memset(d, 0, sizeof *d);
+	const char *np, *mp, *vp;
+	size_t nlen, mlen;
+	spec_split(s, &np, &nlen, &mp, &mlen, &vp);
+	char *name = xstrndup(np, nlen);
+	d->name = xstrdup(trim(name));
+	free(name);
+	if (mp) {
+		d->mod = xstrndup(mp, mlen);
+		d->ver = xstrdup(vp);
 	}
 	return 0;
 }
@@ -220,26 +223,42 @@ void depspec_free(depspec *d) {
 	memset(d, 0, sizeof *d);
 }
 
+static int mod_ok(const char *m, size_t ml, int r) {
+	if (ml == 2 && m[0] == '>' && m[1] == '=') return r >= 0;
+	if (ml == 2 && m[0] == '<' && m[1] == '=') return r <= 0;
+	if (ml == 1 && m[0] == '>') return r > 0;
+	if (ml == 1 && m[0] == '<') return r < 0;
+	if (ml == 1 && m[0] == '=') return r == 0;
+	return 0;
+}
+
 int depspec_matches(const depspec *dep, const char *pkgname, const char *pkgver) {
 	if (!dep->name || !pkgname) return 0;
 	if (strcmp(dep->name, pkgname) != 0) return 0;
 	if (!dep->mod || !dep->mod[0]) return 1;
 	if (!pkgver) return 0;
 	int r = vercmp(pkgver, dep->ver);
-	if (strcmp(dep->mod, ">=") == 0) return r >= 0;
-	if (strcmp(dep->mod, "<=") == 0) return r <= 0;
-	if (strcmp(dep->mod, ">") == 0) return r > 0;
-	if (strcmp(dep->mod, "<") == 0) return r < 0;
-	if (strcmp(dep->mod, "=") == 0) return r == 0;
-	return 0;
+	return mod_ok(dep->mod, strlen(dep->mod), r);
+}
+
+static int spec_matches(const char *name, size_t nlen, const char *mod, size_t mlen,
+                        const char *ver, const char *pkgname, size_t pnlen, const char *pkgver) {
+	if (!pkgname || !name) return 0;
+	if (pnlen != nlen) return 0;
+	if (nlen > 0 && memcmp(name, pkgname, nlen) != 0) return 0;
+	if (!mod || mlen == 0) return 1;
+	if (!pkgver) return 0;
+	int r = vercmp(pkgver, ver);
+	return mod_ok(mod, mlen, r);
 }
 
 static int prov_matches(const char *prov, const depspec *dep) {
-	depspec pd;
-	depspec_parse(prov, &pd);
-	int ok = depspec_matches(dep, pd.name, pd.ver);
-	depspec_free(&pd);
-	return ok;
+	const char *pn, *pm, *pv;
+	size_t pnl, pml;
+	spec_split(prov, &pn, &pnl, &pm, &pml, &pv);
+	return spec_matches(dep->name, dep->name ? strlen(dep->name) : 0,
+	                    dep->mod, dep->mod ? strlen(dep->mod) : 0,
+	                    dep->ver, pn, pnl, pv);
 }
 
 int pkg_matches_dep(pkg *p, const depspec *dep) {
@@ -403,6 +422,18 @@ int pkg_scan_archive(config *c, const char *path, pkg *p) {
 		free(data);
 	}
 	rd_close(r);
+	if (p->name) {
+		int i;
+		for (i = 0; i < p->files.n; i++) {
+			const char *f = p->files.v[i];
+			size_t fl = strlen(f);
+			if (fl == 0 || f[fl - 1] != '/') continue;
+			if (!db_file_has_other_owner(f, p->name)) {
+				strs_add(&p->owners, f);
+				p->nowners++;
+			}
+		}
+	}
 	if (!p->name) {
 		error("package %s has no valid .PKGINFO", path);
 		return -1;

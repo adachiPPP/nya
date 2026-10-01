@@ -434,7 +434,7 @@ int txn_run(config *c, txn *t, int mode) {
 		txn_free(t);
 		return 1;
 	}
-	/* --user mode: symlink installed binaries into ~/.local/bin */
+
 	if (g_user_mode) {
 		int i;
 		char localbin[4096];
@@ -703,7 +703,7 @@ int cli_main(int argc, char **argv) {
 	if (c->logfile && *c->logfile) set_logfile(c->logfile);
 	g_noconfirm = cl.noconfirm;
 	g_overwrite = cl.overwrite;
-	/* --user mode: override paths to ~/.local and skip sudo */
+
 	if (g_user_mode) {
 		warn("--user mode: installing to ~/.local (user apps only, NOT root/system tools!)");
 		const char *home = getenv("HOME");
@@ -735,13 +735,13 @@ int cli_main(int argc, char **argv) {
 		free(c->logfile);
 		c->logfile = xstrdup(user_log);
 		set_logfile(c->logfile);
-		/* ensure dirs exist and are writable */
+
 		mkdir_p(c->dbpath, 0755);
 		mkdir_p(c->nyacache, 0755);
 		char user_bin[4096];
 		snprintf(user_bin, sizeof user_bin, "%s/.local/bin", home);
 		mkdir_p(user_bin, 0755);
-		/* fix stale root-owned cache dirs from previous sudo runs */
+
 		if (access(c->nyacache, W_OK) != 0) {
 			warn("cache %s is not writable (root-owned?), using /tmp fallback", c->nyacache);
 			char fallback[4096];
@@ -916,7 +916,7 @@ int cli_main(int argc, char **argv) {
 			break;
 		}
 		if (notfound.n > 0) {
-			/* targets not in any repo or the AUR: flatpak is the lowest-priority fallback */
+
 			if (fp_available()) {
 				char **fpargs = xcalloc(notfound.n + 2, sizeof *fpargs);
 				fpargs[0] = "install";
@@ -940,7 +940,7 @@ int cli_main(int argc, char **argv) {
 		}
 		strs_free(&notfound);
 		if (t.nadd == 0 && t.nrm == 0) {
-			/* everything was handled by the flatpak fallback */
+
 			txn_free(&t);
 			rc = 0;
 			break;
@@ -979,7 +979,7 @@ int cli_main(int argc, char **argv) {
 			break;
 		}
 		if (notfound.n > 0) {
-			/* targets not installed as pacman packages: flatpak is the fallback */
+
 			if (fp_available()) {
 				char **fpargs = xcalloc(notfound.n + 2, sizeof *fpargs);
 				fpargs[0] = "uninstall";
@@ -1003,7 +1003,7 @@ int cli_main(int argc, char **argv) {
 		}
 		strs_free(&notfound);
 		if (t.nadd == 0 && t.nrm == 0) {
-			/* everything was handled by the flatpak fallback */
+
 			txn_free(&t);
 			rc = 0;
 			break;
@@ -1157,7 +1157,7 @@ int cli_main(int argc, char **argv) {
 	}
 	config_free(c);
 	strs_free(&cl.targets);
-	/* nya kaomoji for operation result */
+
 	if (rc == 0) printf("\n%s:3 mreow~ %soperation succeeded!\n", col_green(), col_reset());
 	return rc;
 }

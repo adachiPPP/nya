@@ -144,15 +144,13 @@ static int noupgrade_match(config *c, const char *relpath) {
 
 static int write_file_from_tar(tar_it *t, tar_entry *e, const char *dest, char *shaout) {
 	int want_sha = shaout != NULL;
-	int fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, e->mode & 0777);
-	if (fd < 0 && errno == ETXTBSY) {
-		unlink(dest);
-		fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, e->mode & 0777);
-	}
+	char tmpl[4300];
+	int fd = make_temp_near(dest, tmpl, sizeof tmpl);
 	if (fd < 0) {
-		error("could not open %s: %s", dest, strerror(errno));
+		error("could not create temp file for %s: %s", dest, strerror(errno));
 		return -1;
 	}
+	fchmod(fd, e->mode & 0777);
 	sha256_t ctx;
 	int have_ctx = 0;
 	char buf[65536];
@@ -174,13 +172,22 @@ static int write_file_from_tar(tar_it *t, tar_entry *e, const char *dest, char *
 			if (w < 0) {
 				if (errno == EINTR) continue;
 				close(fd);
+				unlink(tmpl);
 				return -1;
 			}
 			off += w;
 		}
 		remain -= got;
 	}
-	close(fd);
+	if (close(fd) != 0) {
+		unlink(tmpl);
+		return -1;
+	}
+	if (rename(tmpl, dest) != 0) {
+		error("could not install %s: %s", dest, strerror(errno));
+		unlink(tmpl);
+		return -1;
+	}
 	if (want_sha) {
 		if (!have_ctx) sha256_init(&ctx);
 		sha256_final(&ctx, shaout);
@@ -737,22 +744,36 @@ static int hook_when_matches(hookfile *h, int pre) {
 }
 
 static char *subst_hook(const char *exec, const char *targets, const char *files) {
-	char *out = xmalloc(strlen(exec) + (targets ? strlen(targets) : 0) + (files ? strlen(files) : 0) + 64);
+	size_t tl = targets ? strlen(targets) : 0;
+	size_t fl = files ? strlen(files) : 0;
 	const char *p = exec;
+	size_t n = 1;
+	while (*p) {
+		if (strncmp(p, "%TARGET%", 8) == 0) {
+			n += tl;
+			p += 8;
+		} else if (strncmp(p, "%FILES%", 7) == 0) {
+			n += fl;
+			p += 7;
+		} else {
+			n++;
+			p++;
+		}
+	}
+	char *out = xmalloc(n);
 	char *o = out;
+	p = exec;
 	while (*p) {
 		if (strncmp(p, "%TARGET%", 8) == 0) {
 			if (targets) {
-				size_t l = strlen(targets);
-				memcpy(o, targets, l);
-				o += l;
+				memcpy(o, targets, tl);
+				o += tl;
 			}
 			p += 8;
 		} else if (strncmp(p, "%FILES%", 7) == 0) {
 			if (files) {
-				size_t l = strlen(files);
-				memcpy(o, files, l);
-				o += l;
+				memcpy(o, files, fl);
+				o += fl;
 			}
 			p += 7;
 		} else {
@@ -1012,6 +1033,7 @@ int run_hooks(config *c, txn *t, int pre) {
 					free(cmd);
 				}
 				free(payload);
+				free(fbuf);
 			}
 			strs_free(&targets_s);
 			strs_free(&files_s);
@@ -1095,6 +1117,7 @@ int install_pkgfile(config *c, const char *path) {
 	free(g_local);
 	g_local = NULL;
 	db_load_local(c);
+	txn_free(&dummy);
 	pkg_free(p);
 	return rc;
 }

@@ -386,7 +386,25 @@ int hmap_has(hmap *m, const char *k) {
 	return hmap_get(m, k) != NULL;
 }
 
+void hmap_del(hmap *m, const char *k) {
+	uint64_t h = fnv1a(k) % m->n;
+	hnode *node = m->buckets[h];
+	hnode *prev = NULL;
+	while (node) {
+		if (strcmp(node->k, k) == 0) {
+			if (prev) prev->next = node->next;
+			else m->buckets[h] = node->next;
+			free(node->k);
+			free(node);
+			return;
+		}
+		prev = node;
+		node = node->next;
+	}
+}
+
 void hmap_free(hmap *m) {
+	if (!m) return;
 	int i;
 	for (i = 0; i < m->n; i++) {
 		hnode *node = m->buckets[i];
@@ -529,20 +547,37 @@ char *read_file(const char *path, long *len) {
 	return data;
 }
 
+int make_temp_near(const char *dest, char *tmpl, size_t n) {
+	const char *slash = strrchr(dest, '/');
+	if (slash) snprintf(tmpl, n, "%.*s/.nya-tmp-XXXXXX", (int)(slash - dest), dest);
+	else snprintf(tmpl, n, ".nya-tmp-XXXXXX");
+	return mkstemp(tmpl);
+}
+
 int write_file(const char *path, const char *data, long len, mode_t mode) {
-	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+	char tmpl[4300];
+	int fd = make_temp_near(path, tmpl, sizeof tmpl);
 	if (fd < 0) return -1;
+	fchmod(fd, mode);
 	long off = 0;
 	while (off < len) {
 		ssize_t w = write(fd, data + off, len - off);
 		if (w < 0) {
 			if (errno == EINTR) continue;
 			close(fd);
+			unlink(tmpl);
 			return -1;
 		}
 		off += w;
 	}
-	close(fd);
+	if (close(fd) != 0) {
+		unlink(tmpl);
+		return -1;
+	}
+	if (rename(tmpl, path) != 0) {
+		unlink(tmpl);
+		return -1;
+	}
 	return 0;
 }
 
@@ -674,10 +709,6 @@ int run_capture(char *const argv[], char **out) {
 
 int run_capture_quiet(char *const argv[], char **out) {
 	return run_capture_impl(argv, out, 1);
-}
-
-int run_sh(const char *cmd) {
-	return system(cmd);
 }
 
 int g_noconfirm = 0;

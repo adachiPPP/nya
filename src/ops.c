@@ -221,7 +221,10 @@ int do_check(config *c, const char **targets, int n, int deep) {
 			return -1;
 		}
 		hmap *sha = NULL;
-		if (deep && p->mtree_data) sha = mtree_sha_map(p->mtree_data, p->mtree_len);
+		if (deep) {
+			if (pkg_load_mtree(p) != 0) continue;
+			sha = mtree_sha_map(p->mtree_data, p->mtree_len);
+		}
 		int j;
 		for (j = 0; j < p->files.n; j++) {
 			const char *f = p->files.v[j];

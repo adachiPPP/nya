@@ -1,5 +1,42 @@
 #include "nya.h"
 
+static void provmap_free(hmap *m) {
+	if (!m) return;
+	int i;
+	for (i = 0; i < m->n; i++) {
+		hnode *node = m->buckets[i];
+		while (node) {
+			strs_free((strs *)node->v);
+			free(node->v);
+			node = node->next;
+		}
+	}
+	hmap_free(m);
+}
+
+static void provmap_put(hmap **m, const char *key, const char *pkgname) {
+	if (!key || !key[0]) return;
+	if (!*m) *m = hmap_new(1 << 10);
+	strs *l = hmap_get(*m, key);
+	if (!l) {
+		l = xcalloc(1, sizeof *l);
+		hmap_put(*m, key, l);
+	}
+	if (!strs_has(l, pkgname)) strs_add(l, pkgname);
+}
+
+static void txn_index_pkg(hmap **names, hmap **provs, pkg *p) {
+	int j;
+	if (!p->name) return;
+	if (!*names) *names = hmap_new(1 << 10);
+	if (!hmap_has(*names, p->name)) hmap_put(*names, p->name, p);
+	for (j = 0; j < p->provides.n; j++) {
+		char nm[512];
+		db_prov_key(p->provides.v[j], nm, sizeof nm);
+		provmap_put(provs, nm, p->name);
+	}
+}
+
 void txn_init(txn *t, config *c) {
 	memset(t, 0, sizeof *t);
 	t->c = c;
@@ -8,17 +45,25 @@ void txn_init(txn *t, config *c) {
 void txn_free(txn *t) {
 	free(t->add);
 	free(t->rm);
+	hmap_free(t->add_name);
+	provmap_free(t->add_prov);
+	hmap_free(t->rm_name);
+	provmap_free(t->rm_prov);
 	memset(t, 0, sizeof *t);
 }
 
 void txn_add_add(txn *t, pkg *p) {
-	int i;
-	for (i = 0; i < t->nadd; i++) {
-		if (t->add[i] == p) return;
-		if (t->add[i]->name && p->name && strcmp(t->add[i]->name, p->name) == 0) return;
+	if (p->name) {
+		if (t->add_name && hmap_has(t->add_name, p->name)) return;
+	} else {
+		int i;
+		for (i = 0; i < t->nadd; i++) {
+			if (t->add[i] == p) return;
+		}
 	}
 	t->add = xrealloc(t->add, (t->nadd + 1) * sizeof(pkg *));
 	t->add[t->nadd++] = p;
+	txn_index_pkg(&t->add_name, &t->add_prov, p);
 }
 
 void txn_add_rm(txn *t, pkg *p) {
@@ -28,9 +73,11 @@ void txn_add_rm(txn *t, pkg *p) {
 	}
 	t->rm = xrealloc(t->rm, (t->nrm + 1) * sizeof(pkg *));
 	t->rm[t->nrm++] = p;
+	txn_index_pkg(&t->rm_name, &t->rm_prov, p);
 }
 
 static int in_rm(txn *t, const char *name) {
+	if (t->rm_name) return hmap_has(t->rm_name, name);
 	int i;
 	for (i = 0; i < t->nrm; i++) {
 		if (t->rm[i]->name && strcmp(t->rm[i]->name, name) == 0) return 1;
@@ -39,6 +86,7 @@ static int in_rm(txn *t, const char *name) {
 }
 
 static int in_add(txn *t, const char *name) {
+	if (t->add_name) return hmap_has(t->add_name, name);
 	int i;
 	for (i = 0; i < t->nadd; i++) {
 		if (t->add[i]->name && strcmp(t->add[i]->name, name) == 0) return 1;
@@ -47,6 +95,18 @@ static int in_add(txn *t, const char *name) {
 }
 
 static int installed_matches(txn *t, const depspec *dep) {
+	pkg *p = db_find_local(dep->name);
+	if (p && !in_rm(t, p->name) && pkg_matches_dep(p, dep)) return 1;
+	strs *provs = db_local_providers(dep->name);
+	if (provs) {
+		int i;
+		for (i = 0; i < provs->n; i++) {
+			pkg *q = db_find_local(provs->v[i]);
+			if (!q || in_rm(t, q->name)) continue;
+			if (pkg_matches_dep(q, dep)) return 1;
+		}
+		return 0;
+	}
 	int i;
 	for (i = 0; i < g_nlocal; i++) {
 		pkg *l = g_local[i];
@@ -56,27 +116,44 @@ static int installed_matches(txn *t, const depspec *dep) {
 	return 0;
 }
 
-static int add_matches(txn *t, const depspec *dep) {
-	int i;
-	for (i = 0; i < t->nadd; i++) {
-		if (pkg_matches_dep(t->add[i], dep)) return 1;
+static int list_matches(hmap *names, hmap *provs, const depspec *dep) {
+	if (!names) return 0;
+	pkg *p = hmap_get(names, dep->name);
+	if (p && pkg_matches_dep(p, dep)) return 1;
+	if (provs) {
+		strs *l = hmap_get(provs, dep->name);
+		if (l) {
+			int i;
+			for (i = 0; i < l->n; i++) {
+				pkg *q = hmap_get(names, l->v[i]);
+				if (q && pkg_matches_dep(q, dep)) return 1;
+			}
+		}
 	}
 	return 0;
+}
+
+static int add_matches(txn *t, const depspec *dep) {
+	return list_matches(t->add_name, t->add_prov, dep);
 }
 
 static int rm_matches(txn *t, const depspec *dep) {
-	int i;
-	for (i = 0; i < t->nrm; i++) {
-		if (pkg_matches_dep(t->rm[i], dep)) return 1;
-	}
-	return 0;
+	return list_matches(t->rm_name, t->rm_prov, dep);
 }
 
 static pkg *sync_provider(const depspec *dep) {
-	int i;
-	for (i = 0; i < g_nsync; i++) {
-		if (g_sync[i]->name && strcmp(g_sync[i]->name, dep->name) == 0) return g_sync[i];
+	pkg *exact = db_find_sync(dep->name);
+	if (exact) return exact;
+	strs *provs = db_sync_providers(dep->name);
+	if (provs) {
+		int i;
+		for (i = 0; i < provs->n; i++) {
+			pkg *q = db_find_sync(provs->v[i]);
+			if (q && pkg_matches_dep(q, dep)) return q;
+		}
+		return NULL;
 	}
+	int i;
 	for (i = 0; i < g_nsync; i++) {
 		if (pkg_matches_dep(g_sync[i], dep)) return g_sync[i];
 	}
@@ -208,7 +285,7 @@ int txn_build_install(config *c, const char **targets, int ntargets, txn *t, str
 					depspec_free(&dep);
 					continue;
 				}
-				/* not in any repo: fall back to nya-hosts and/or the AUR (configurable order) */
+
 				int done = 0;
 				if (c->aurfirst) {
 					if (c->aur && aur_build_install(c, dep.name, t) == 0) done = 1;
@@ -285,7 +362,7 @@ int txn_build_install(config *c, const char **targets, int ntargets, txn *t, str
 					idx--;
 					continue;
 				}
-				/* explicitly requested: reinstall the same version */
+
 				p->is_upgrade = 1;
 				p->is_reinstall = 1;
 				p->reason = l->reason;
@@ -423,8 +500,23 @@ int txn_file_conflicts(config *c, txn *t) {
 	return 0;
 }
 
+static void txn_reindex(txn *t) {
+	hmap_free(t->add_name);
+	provmap_free(t->add_prov);
+	hmap_free(t->rm_name);
+	provmap_free(t->rm_prov);
+	t->add_name = NULL;
+	t->add_prov = NULL;
+	t->rm_name = NULL;
+	t->rm_prov = NULL;
+	int i;
+	for (i = 0; i < t->nadd; i++) txn_index_pkg(&t->add_name, &t->add_prov, t->add[i]);
+	for (i = 0; i < t->nrm; i++) txn_index_pkg(&t->rm_name, &t->rm_prov, t->rm[i]);
+}
+
 int txn_prepare(config *c, txn *t) {
 	(void)c;
+	txn_reindex(t);
 	int idx = 0;
 	while (idx < t->nadd) {
 		pkg *p = t->add[idx++];

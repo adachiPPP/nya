@@ -22,8 +22,8 @@ int fp_available(void) {
 	return found;
 }
 
-/* when running as root (elevated via sudo/doas), run flatpak as the invoking
- * user so it manages the user install instead of root's. */
+
+
 static char **fp_user_argv(char *const argv[]) {
 	if (geteuid() != 0) return NULL;
 	const char *user = invoking_user_name();
@@ -224,11 +224,36 @@ int fp_search(config *c, const char **terms, int n) {
 	return nrows;
 }
 
+static int fp_has_apps(void) {
+	char *argv[] = {(char *)"flatpak", (char *)"list", (char *)"--app", NULL};
+	char *out = NULL;
+	int rc = fp_capture(argv, &out);
+	if (rc != 0 || !out) {
+		free(out);
+		return 1;
+	}
+	int any = 0;
+	const char *p = out;
+	while (*p) {
+		if (*p != '\n' && *p != '\r' && *p != '\t' && *p != ' ') {
+			any = 1;
+			break;
+		}
+		p++;
+	}
+	free(out);
+	return any;
+}
+
 int fp_update(config *c) {
 	(void)c;
 	if (!fp_available()) {
 		warn("flatpak is not installed, skipping flatpak update");
 		return -1;
+	}
+	if (!fp_has_apps()) {
+		info("no flatpak applications installed, skipping flatpak update");
+		return 0;
 	}
 	info("Updating flatpak applications...");
 	char *argv[] = {"flatpak", "update", "-y", NULL};

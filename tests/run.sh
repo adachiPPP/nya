@@ -360,6 +360,13 @@ grep -q "1.1-1 1.0-1" "$ROOT/root/usr/share/nya/upgraded" || fail "post_upgrade 
 [ ! -d "$ROOT/root/var/lib/pacman/local/hello-1.0-1" ] || fail "old local db dir not removed"
 ok "pacnew on upgrade"
 
+echo "== atomic file replacement =="
+ino_before=$(stat -c %i "$ROOT/root/usr/bin/hello")
+$NYA $CFGARG install hello --noconfirm || fail "reinstall for atomic test"
+ino_after=$(stat -c %i "$ROOT/root/usr/bin/hello")
+[ "$ino_before" != "$ino_after" ] || fail "regular file overwritten in place (not atomic rename)"
+ok "regular files replaced atomically"
+
 echo "== -U install from file =="
 $NYA $CFGARG -U "$REPO/kitty-1.0-1-x86_64.pkg.tar.zst" --noconfirm || fail "-U kitty"
 [ -f "$ROOT/root/usr/bin/kitty" ] || fail "kitty binary missing"
@@ -416,7 +423,7 @@ NYA_CONF="$ROOT/auto/nya.conf" $NYA config >/dev/null 2>&1 || true
 ok "first-use config generation"
 
 echo "== version/help =="
-$NYA --version | grep -q "4.1.0" || fail "--version"
+$NYA --version | grep -q "4.2.0" || fail "--version"
 $NYA --help | grep -q "nya install" || fail "--help"
 ok "version/help"	echo "== sync vs update =="
 	mkdir -p "$ROOT/fakebin"

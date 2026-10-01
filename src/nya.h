@@ -21,7 +21,7 @@
 #include <sys/file.h>
 #include <strings.h>
 
-#define NYA_VERSION "4.1.0"
+#define NYA_VERSION "4.2.0"
 
 typedef struct {
 	char **v;
@@ -50,6 +50,7 @@ hmap *hmap_new(int n);
 void hmap_put(hmap *m, const char *k, void *v);
 void *hmap_get(hmap *m, const char *k);
 int hmap_has(hmap *m, const char *k);
+void hmap_del(hmap *m, const char *k);
 void hmap_free(hmap *m);
 
 typedef struct {
@@ -78,6 +79,7 @@ int endswith(const char *s, const char *p);
 char *path_join(const char *a, const char *b);
 int mkdir_p(const char *path, mode_t mode);
 char *read_file(const char *path, long *len);
+int make_temp_near(const char *dest, char *tmpl, size_t n);
 int write_file(const char *path, const char *data, long len, mode_t mode);
 int is_dir(const char *p);
 int is_file(const char *p);
@@ -89,7 +91,6 @@ int run_cmd(char *const argv[]);
 int run_capture(char *const argv[], char **out);
 int run_capture_quiet(char *const argv[], char **out);
 const char *invoking_user_name(void);
-int run_sh(const char *cmd);
 
 extern int g_noconfirm;
 extern int g_overwrite;
@@ -234,6 +235,7 @@ typedef struct pkg {
 	char *filename;
 	char *mtree_data;
 	long mtree_len;
+	char mtree_path[4096];
 	char *install_data;
 	long install_len;
 	strs provides;
@@ -244,6 +246,7 @@ typedef struct pkg {
 	strs groups;
 	strs licenses;
 	strs backup;
+	strs owners;
 	strs files;
 	int reason;
 	int is_local;
@@ -253,6 +256,7 @@ typedef struct pkg {
 	int is_reinstall;
 	int is_dep;
 	int nfiles;
+	int nowners;
 } pkg;
 
 pkg *pkg_new(const char *repo);
@@ -279,6 +283,12 @@ extern hmap *g_owner;
 int db_load_all(config *c);
 int db_load_sync(config *c, const char *dbfile, const char *reponame);
 int db_load_local(config *c);
+int pkg_load_mtree(pkg *p);
+void pkg_unload_mtree(pkg *p);
+void db_local_owners_sub(const char *relpath, const char *pkgname);
+void db_prov_key(const char *prov, char *out, size_t n);
+strs *db_local_providers(const char *name);
+strs *db_sync_providers(const char *name);
 pkg *db_find_sync(const char *name);
 pkg *db_find_sync_exact(const char *repo, const char *name);
 pkg *db_find_local(const char *name);
@@ -294,7 +304,6 @@ hmap *mtree_sha_map(const char *data, long len);
 
 int pkg_read_pkginfo(const char *data, long len, pkg *p);
 int pkg_scan_archive(config *c, const char *path, pkg *p);
-int pkg_meta_from_desc(pkg *p, const char *data);
 
 typedef struct dl {
 	char **urls;
@@ -327,6 +336,10 @@ typedef struct txn {
 	int recursive;
 	int cascade;
 	int unneeded;
+	hmap *add_name;
+	hmap *add_prov;
+	hmap *rm_name;
+	hmap *rm_prov;
 } txn;
 
 void txn_init(txn *t, config *c);

@@ -31,7 +31,7 @@ static int aur_enabled(config *c) {
 #define MALWARE_URL "https://raw.githubusercontent.com/DeSynkro/aur-scan/main/aur_pkg_list.txt"
 
 static hmap *g_malware = NULL;
-static int g_malware_state = 0; /* 0 = not tried, 1 = loaded, 2 = failed */
+static int g_malware_state = 0;
 
 static void malware_load_url(config *c, const char *url, hmap *m) {
 	char *data;
@@ -114,7 +114,7 @@ int aur_search(config *c, const char *term, int quiet) {
 	json *r;
 	for (r = results ? results->child : NULL; r; r = r->next) {
 		const char *name = json_str(json_get(r, "Name"));
-		if (name && hmap_has(repos, name)) continue; /* configured repos take priority */
+		if (name && hmap_has(repos, name)) continue;
 		print_aur_pkg(c, r);
 		count++;
 	}
@@ -166,7 +166,7 @@ static int aur_search_multi_core(config *c, const char **terms, int n, int check
 		for (r = results0 ? results0->child : NULL; r; r = r->next) {
 			const char *nm = json_str(json_get(r, "Name"));
 			if (!nm) continue;
-			if (hmap_has(repos, nm)) continue; /* configured repos take priority */
+			if (hmap_has(repos, nm)) continue;
 			int inall = 1;
 			for (i = 1; i < n && inall; i++) {
 				if (!strs_has(&sets[i], nm)) inall = 0;
@@ -276,11 +276,13 @@ static int extract_snapshot(const char *tarball, const char *dir) {
 			mkdir_p(dest, e.mode & 07777);
 			tar_skip(&t);
 		} else if (e.type == '0') {
-			int fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, e.mode & 0777);
+			char tmpl[4600];
+			int fd = make_temp_near(dest, tmpl, sizeof tmpl);
 			if (fd < 0) {
 				tar_skip(&t);
 				continue;
 			}
+			fchmod(fd, e.mode & 0777);
 			char buf[65536];
 			long long remain = e.size;
 			while (remain > 0) {
@@ -298,7 +300,9 @@ static int extract_snapshot(const char *tarball, const char *dir) {
 				}
 				remain -= got;
 			}
-			close(fd);
+			if (close(fd) != 0 || rename(tmpl, dest) != 0) {
+				unlink(tmpl);
+			}
 		} else {
 			tar_skip(&t);
 		}
@@ -353,7 +357,7 @@ int aur_pkg_exists(config *c, const char *name) {
 	free(enc);
 	char *data;
 	long len;
-	if (dl_url(c, url, &data, &len) != 0) return 1; /* network issue: be optimistic, let download retries handle it */
+	if (dl_url(c, url, &data, &len) != 0) return 1;
 	json *root = json_parse(data, len);
 	free(data);
 	if (!root) return 1;
@@ -466,8 +470,8 @@ static int aur_resolve_deps(config *c, const char *name) {
 	FILE *fp = popen(cmd, "r");
 	if (!fp) return -1;
 
-	/* collect everything first: repo deps are installed in ONE batched transaction
-	 * instead of locking/committing the db once per dependency */
+
+
 	strs repodeps;
 	memset(&repodeps, 0, sizeof repodeps);
 	strs aurdeps;
@@ -649,8 +653,6 @@ int aur_resolve_and_build(config *c, const char *name) {
 		}
 		return -1;
 	}
-	db_load_local(c);
-
 	int i;
 	for (i = 0; i < g_aur_building.n; i++) {
 		if (strcmp(g_aur_building.v[i], name) == 0) {

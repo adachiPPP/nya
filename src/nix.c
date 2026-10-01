@@ -73,7 +73,7 @@ static int print_nix_results(const char *json_data, int want_all) {
 int nix_search(config *c, const char *term) {
 	if (!nix_enabled(c)) return -1;
 	char *argv[] = {"nix", "search", "nixpkgs", (char *)term, "--json", NULL};
-	char *out;
+	char *out = NULL;
 	if (run_capture(argv, &out) != 0) {
 		free(out);
 		error("nix search failed (is nixpkgs available to evaluate?)");
@@ -92,7 +92,7 @@ int nix_search(config *c, const char *term) {
 int nix_info(config *c, const char *name) {
 	if (!nix_enabled(c)) return -1;
 	char *argv[] = {"nix", "search", "nixpkgs", (char *)name, "--json", NULL};
-	char *out;
+	char *out = NULL;
 	if (run_capture(argv, &out) != 0) {
 		free(out);
 		error("nix search failed (is nixpkgs available to evaluate?)");
@@ -114,7 +114,7 @@ int nix_info(config *c, const char *name) {
 int nix_search_any(config *c, const char **terms, int n) {
 	(void)c;
 	if (!nix_available()) return 0;
-	char **argv = xcalloc(n + 4, sizeof *argv);
+	char **argv = xcalloc(n + 5, sizeof *argv);
 	argv[0] = "nix";
 	argv[1] = "search";
 	argv[2] = "nixpkgs";
@@ -122,7 +122,7 @@ int nix_search_any(config *c, const char **terms, int n) {
 	for (i = 0; i < n; i++) argv[i + 3] = (char *)terms[i];
 	argv[n + 3] = "--json";
 	argv[n + 4] = NULL;
-	char *out;
+	char *out = NULL;
 	if (run_capture_quiet(argv, &out) != 0) {
 		free(argv);
 		free(out);

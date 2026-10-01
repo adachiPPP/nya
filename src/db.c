@@ -7,6 +7,8 @@ int g_nlocal = 0;
 hmap *g_owner = NULL;
 static hmap *g_owner_multi = NULL;
 
+static void db_local_owners_add_pkg(pkg *p);
+
 static void owner_multi_add(const char *f, const char *name) {
 	if (!g_owner_multi) g_owner_multi = hmap_new(1 << 15);
 	strs *l = hmap_get(g_owner_multi, f);
@@ -93,6 +95,7 @@ void pkg_free(pkg *p) {
 	strs_free(&p->groups);
 	strs_free(&p->licenses);
 	strs_free(&p->backup);
+	strs_free(&p->owners);
 	strs_free(&p->files);
 	free(p);
 }
@@ -101,6 +104,78 @@ static hmap *g_sync_idx;
 static hmap *g_sync_name = NULL;
 static hmap *g_local_idx = NULL;
 static hmap *g_local_dir_idx = NULL;
+static hmap *g_local_prov = NULL;
+static hmap *g_sync_prov = NULL;
+
+static void prov_name(const char *prov, char *out, size_t n) {
+	size_t i = 0;
+	while (prov[i] && prov[i] != '<' && prov[i] != '>' && prov[i] != '=' && i + 1 < n) {
+		out[i] = prov[i];
+		i++;
+	}
+	while (i > 0 && (out[i - 1] == ' ' || out[i - 1] == '\t')) i--;
+	out[i] = '\0';
+}
+
+static void prov_add(hmap *idx, const char *prov, const char *pkgname) {
+	char nm[512];
+	prov_name(prov, nm, sizeof nm);
+	if (!nm[0]) return;
+	strs *l = hmap_get(idx, nm);
+	if (!l) {
+		l = xcalloc(1, sizeof *l);
+		hmap_put(idx, nm, l);
+	}
+	if (!strs_has(l, pkgname)) strs_add(l, pkgname);
+}
+
+static void prov_index_free(hmap *idx) {
+	if (!idx) return;
+	int i;
+	for (i = 0; i < idx->n; i++) {
+		hnode *node = idx->buckets[i];
+		while (node) {
+			strs_free((strs *)node->v);
+			free(node->v);
+			node = node->next;
+		}
+	}
+	hmap_free(idx);
+}
+
+void db_prov_key(const char *prov, char *out, size_t n) {
+	prov_name(prov, out, n);
+}
+
+strs *db_local_providers(const char *name) {
+	return g_local_prov ? hmap_get(g_local_prov, name) : NULL;
+}
+
+strs *db_sync_providers(const char *name) {
+	return g_sync_prov ? hmap_get(g_sync_prov, name) : NULL;
+}
+
+static void rebuild_local_prov(void) {
+	prov_index_free(g_local_prov);
+	g_local_prov = hmap_new(1 << 15);
+	int i, j;
+	for (i = 0; i < g_nlocal; i++) {
+		pkg *p = g_local[i];
+		if (!p->name) continue;
+		for (j = 0; j < p->provides.n; j++) prov_add(g_local_prov, p->provides.v[j], p->name);
+	}
+}
+
+static void rebuild_sync_prov(void) {
+	prov_index_free(g_sync_prov);
+	g_sync_prov = hmap_new(1 << 15);
+	int i, j;
+	for (i = 0; i < g_nsync; i++) {
+		pkg *p = g_sync[i];
+		if (!p->name) continue;
+		for (j = 0; j < p->provides.n; j++) prov_add(g_sync_prov, p->provides.v[j], p->name);
+	}
+}
 
 static void local_index_add(pkg *p) {
 	if (!g_local_idx || !p->name) return;
@@ -356,6 +431,9 @@ int db_load_sync(config *c, const char *dbfile, const char *reponame) {
 }
 
 int db_load_local(config *c) {
+	free(g_local);
+	g_local = NULL;
+	g_nlocal = 0;
 	if (g_local_idx) {
 		hmap_free(g_local_idx);
 		g_local_idx = NULL;
@@ -405,12 +483,7 @@ int db_load_local(config *c) {
 		snprintf(path, sizeof path, "%s/mtree", entry);
 		if (is_file(path)) {
 			p->has_mtree = 1;
-			long mlen = 0;
-			data = read_file(path, &mlen);
-			if (data) {
-				p->mtree_data = data;
-				p->mtree_len = mlen;
-			}
+			snprintf(p->mtree_path, sizeof p->mtree_path, "%s", path);
 		}
 		snprintf(path, sizeof path, "%s/install", entry);
 		if (is_file(path)) {
@@ -428,10 +501,31 @@ int db_load_local(config *c) {
 			if (!p->version) p->version = xstrdup(ver);
 		}
 		local_add(p);
+		pkg_unload_mtree(p);
+		if (p->name && p->version) db_local_owners_add_pkg(p);
 	}
 	closedir(d);
 	db_build_owner_map();
+	rebuild_local_prov();
 	return 0;
+}
+
+int pkg_load_mtree(pkg *p) {
+	if (p->mtree_data) return 0;
+	if (!p->mtree_path[0]) return -1;
+	long mlen = 0;
+	char *data = read_file(p->mtree_path, &mlen);
+	if (!data) return -1;
+	p->mtree_data = data;
+	p->mtree_len = mlen;
+	return 0;
+}
+
+void pkg_unload_mtree(pkg *p) {
+	if (!p->mtree_data) return;
+	free(p->mtree_data);
+	p->mtree_data = NULL;
+	p->mtree_len = 0;
 }
 
 int db_load_all(config *c) {
@@ -451,6 +545,7 @@ int db_load_all(config *c) {
 		}
 	}
 	db_load_local(c);
+	rebuild_sync_prov();
 	return 0;
 }
 
@@ -501,6 +596,67 @@ void db_build_owner_map(void) {
 const char *db_owner(const char *relpath) {
 	if (!g_owner) return NULL;
 	return hmap_get(g_owner, relpath);
+}
+
+static void db_local_owners_add_pkg(pkg *p) {
+	int j;
+	for (j = 0; j < p->files.n; j++) {
+		const char *f = p->files.v[j];
+		size_t fl = strlen(f);
+		if (fl == 0 || f[fl - 1] != '/') continue;
+		owner_multi_add(f, p->name);
+	}
+}
+
+static void owner_multi_del(strs *l, const char *name) {
+	int j, w = 0;
+	for (j = 0; j < l->n; j++) {
+		if (strcmp(l->v[j], name) == 0) {
+			free(l->v[j]);
+			continue;
+		}
+		l->v[w++] = l->v[j];
+	}
+	l->n = w;
+}
+
+void db_local_owners_sub(const char *relpath, const char *pkgname) {
+	strs *l = g_owner_multi ? hmap_get(g_owner_multi, relpath) : NULL;
+	if (!l) return;
+	owner_multi_del(l, pkgname);
+	if (l->n == 0) {
+		int j;
+		for (j = 0; j < l->n; j++) free(l->v[j]);
+		free(l->v);
+		free(l);
+		hmap_del(g_owner_multi, relpath);
+	}
+	if (g_owner) {
+		const char *cur = hmap_get(g_owner, relpath);
+		if (cur && strcmp(cur, pkgname) == 0) {
+			strs *l2 = g_owner_multi ? hmap_get(g_owner_multi, relpath) : NULL;
+			if (l2 && l2->n > 0) hmap_put(g_owner, relpath, l2->v[0]);
+			else hmap_del(g_owner, relpath);
+		}
+	}
+}
+
+static void local_index_del(pkg *p) {
+	if (g_local_idx && p->name) hmap_del(g_local_idx, p->name);
+	if (g_local_dir_idx && p->name && p->version) {
+		char tmp[1100];
+		snprintf(tmp, sizeof tmp, "%s-%s", p->name, p->version);
+		hmap_del(g_local_dir_idx, tmp);
+	}
+}
+
+static void db_local_forget(pkg *p) {
+	if (!p) return;
+	local_index_del(p);
+	int i;
+	for (i = 0; i < p->nowners; i++) db_local_owners_sub(p->owners.v[i], p->name);
+	strs_free(&p->owners);
+	p->nowners = 0;
 }
 
 int db_entry_path(config *c, pkg *p, char *out, size_t n) {
@@ -590,6 +746,8 @@ int db_write_local_pkg(config *c, pkg *p) {
 }
 
 void db_remove_local(config *c, const char *name, const char *version) {
+	pkg *p = local_find_idx(name);
+	if (p && p->version && strcmp(p->version, version) == 0) db_local_forget(p);
 	char dir[4096];
 	snprintf(dir, sizeof dir, "%s/local/%s-%s", c->dbpath, name, version);
 	DIR *d = opendir(dir);

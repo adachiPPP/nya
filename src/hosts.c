@@ -179,7 +179,7 @@ static int host_fetch_recipe(config *c, const char *name, host_recipe *r, int qu
 		if (!quiet) error("no hosts repo configured (set 'hostsrepo = <url>' in %s)", c->path);
 		return -1;
 	}
-	/* resolve the recipe filename through packages.info when present */
+
 	char fbuf[512];
 	const char *fname = name;
 	host_entry *idx = NULL;
@@ -287,7 +287,7 @@ static int run_argv_as(const char *user, const char *cwd, char *const argv[]) {
 
 static char *shq(const char *s) {
 	size_t n = strlen(s);
-	char *out = xmalloc(n * 2 + 3);
+	char *out = xmalloc(n * 4 + 3);
 	char *p = out;
 	*p++ = '\'';
 	const char *c;
@@ -306,8 +306,8 @@ static char *shq(const char *s) {
 	return out;
 }
 
-/* replace the literal $SUDOBIN token with the configured sudobin (sudo/doas),
- * shell-quoted so the value is safe to embed in the instruction script */
+
+
 static char *expand_sudobin(const char *line, const char *sudobin) {
 	const char *tok = "$SUDOBIN";
 	size_t tokl = strlen(tok);
@@ -494,11 +494,13 @@ static int host_is_junk(const char *base) {
 static int copy_file(const char *src, const char *dst, mode_t mode) {
 	int in = open(src, O_RDONLY);
 	if (in < 0) return -1;
-	int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, mode);
+	char tmpl[4300];
+	int out = make_temp_near(dst, tmpl, sizeof tmpl);
 	if (out < 0) {
 		close(in);
 		return -1;
 	}
+	fchmod(out, mode);
 	char buf[65536];
 	ssize_t got;
 	while ((got = read(in, buf, sizeof buf)) > 0) {
@@ -509,14 +511,18 @@ static int copy_file(const char *src, const char *dst, mode_t mode) {
 				if (errno == EINTR) continue;
 				close(in);
 				close(out);
+				unlink(tmpl);
 				return -1;
 			}
 			off += w;
 		}
 	}
 	close(in);
-	close(out);
-	return got < 0 ? -1 : 0;
+	if (got < 0 || close(out) != 0 || rename(tmpl, dst) != 0) {
+		unlink(tmpl);
+		return -1;
+	}
+	return 0;
 }
 
 static int merge_tree(config *c, const char *src, const char *root, pkg *p,
@@ -648,7 +654,7 @@ static int size_dir_name(const char *name) {
 }
 
 static int host_install_icon_file(config *c, pkg *p, const char *src, long long *total) {
-	/* pick the size from the file's directory chain (hicolor/<N>x<N>|<scalable>/apps/...) */
+
 	char parent[4700];
 	snprintf(parent, sizeof parent, "%s", src);
 	char size[64] = "256x256";
@@ -819,11 +825,11 @@ static int host_app_menu(config *c, pkg *p, const char *proj, const char *name,
 	char deskbundle[4700] = "";
 	int merged = 0;
 	if (bundlesrc[0] && path_inside(bundlesrc, appdir)) {
-		/* app folder is already part of the copied bundle */
+
 		snprintf(deskbundle, sizeof deskbundle, "%s/%s", bundlebase, desktop + strlen(bundlesrc) + 1);
 		merged = 1;
 	} else if (bundlesrc[0]) {
-		/* bundle exists but the app folder lives elsewhere: merge it in so the link stays valid */
+
 		info("Merging app folder into %s...", bundlebase);
 		char relprefix[4600];
 		snprintf(relprefix, sizeof relprefix, "usr/lib/nya/%s", name);
@@ -903,7 +909,7 @@ static void host_uninstall_local(config *c, pkg *p) {
 }
 
 static int host_install_deps(config *c, const char *name, host_recipe *r) {
-	/* pass 1: batch every missing dependency that lives in a configured repo */
+
 	strs batch;
 	memset(&batch, 0, sizeof batch);
 	int i;
@@ -963,7 +969,7 @@ static int host_install_deps(config *c, const char *name, host_recipe *r) {
 	} else {
 		strs_free(&batch);
 	}
-	/* pass 2: whatever is left (host/aur-only deps) through the per-dep chain */
+
 	for (i = 0; i < r->dependencies.n; i++) {
 		const char *dep = r->dependencies.v[i];
 		if (!*dep || *dep == '#') continue;
@@ -985,7 +991,7 @@ static int host_install_deps(config *c, const char *name, host_recipe *r) {
 			txn_free(&t);
 			continue;
 		}
-		/* mark the direct dependency itself as a dependency so -Qd/-Rs treat it right */
+
 		int k;
 		for (k = 0; k < t.nadd; k++) {
 			if (!t.add[k]->is_dep && t.add[k]->name && strcmp(t.add[k]->name, dep) == 0) {
@@ -1030,7 +1036,7 @@ static int host_do_install_inner(config *c, const char *name, host_recipe *r) {
 	char build[4096];
 	host_build_dir(buser, build, sizeof build);
 	if (mkdir_p(build, 0755) != 0 && !root) {
-		/* HOME cache not writable (e.g. root-owned parent): fall back to /tmp */
+
 		snprintf(build, sizeof build, "/tmp/nya-hosts-%ld", (long)geteuid());
 		mkdir_p(build, 0755);
 	}
@@ -1262,8 +1268,8 @@ static int host_do_install_inner(config *c, const char *name, host_recipe *r) {
 	return 0;
 }
 
-/* entry point for host installs: keeps a recursion stack so host->host
- * [dependencies] cannot loop forever on circular recipes */
+
+
 static int host_do_install(config *c, const char *name, host_recipe *r) {
 	int i;
 	for (i = 0; i < g_host_stack.n; i++) {
@@ -1432,9 +1438,9 @@ static int host_search_index(config *c, host_entry *e, int n, const char **terms
 }
 
 static void host_git_url(const char *url, char *out, size_t n) {
-	/* GitHub Pages URLs (https://<user>.github.io/<repo>) serve the site, not the
-	 * git repo: rewrite them to https://github.com/<user>/<repo>.git so the
-	 * search index can be cloned. Everything else is passed through unchanged. */
+
+
+
 	const char *p = url;
 	const char *scheme = NULL;
 	if (strncmp(p, "https://", 8) == 0) {
@@ -1447,7 +1453,7 @@ static void host_git_url(const char *url, char *out, size_t n) {
 	const char *dot = strstr(p, ".github.io");
 	if (scheme && dot && dot > p) {
 		size_t userlen = (size_t)(dot - p);
-		const char *rest = dot + 10; /* past ".github.io" */
+		const char *rest = dot + 10;
 		const char *slash = strchr(rest, '/');
 		if (slash && slash[1]) {
 			const char *repo = slash + 1;
