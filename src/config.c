@@ -28,6 +28,7 @@ void config_free(config *c) {
 	strs_free(&c->ignoregrp);
 	strs_free(&c->siglevel);
 	strs_free(&c->noupgrade);
+	strs_free(&c->pkgorder);
 	for (i = 0; i < c->nrepos; i++) repo_free(c->repos[i]);
 	free(c->repos);
 	free(c);
@@ -49,6 +50,10 @@ config *config_alloc(void) {
 	c->refreshage = 6 * 3600;
 	c->color = 1;
 	c->searchaur = c->searchnix = c->searchflatpak = c->searchhost = -1;
+	strs_add(&c->pkgorder, "repos");
+	strs_add(&c->pkgorder, "hosts");
+	strs_add(&c->pkgorder, "aur");
+	strs_add(&c->pkgorder, "flatpak");
 	return c;
 }
 
@@ -81,9 +86,7 @@ static void cfg_add_str(strs *s, const char *val) {
 		if (!strs_has(s, tmp.v[i])) strs_add(s, tmp.v[i]);
 	}
 	strs_free(&tmp);
-}
-
-static void config_apply_key(config *c, repo *r, const char *key, const char *val) {
+}static void config_apply_key(config *c, repo *r, const char *key, const char *val) {
 	if (!r) {
 		if (str_ieq(key, "RootDir")) {
 			free(c->rootdir);
@@ -108,10 +111,10 @@ static void config_apply_key(config *c, repo *r, const char *key, const char *va
 			else if (str_ieq(key, "NoUpgrade")) dst = &c->noupgrade;
 			else dst = &c->siglevel;
 			cfg_add_str(dst, val);
-	} else if (str_ieq(key, "ParallelDownloads")) {
-		c->parallel = atoi(val);
-	} else if (str_ieq(key, "RefreshAge")) {
-		c->refreshage = atol(val);
+		} else if (str_ieq(key, "ParallelDownloads")) {
+			c->parallel = atoi(val);
+		} else if (str_ieq(key, "RefreshAge")) {
+			c->refreshage = atol(val);
 		} else if (str_ieq(key, "aur")) {
 			c->aur = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
 		} else if (str_ieq(key, "nix")) {
@@ -120,27 +123,31 @@ static void config_apply_key(config *c, repo *r, const char *key, const char *va
 			c->searchaur = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
 		} else if (str_ieq(key, "searchnix")) {
 			c->searchnix = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
-	} else if (str_ieq(key, "searchflatpak")) {
-		c->searchflatpak = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
-	} else if (str_ieq(key, "searchhost")) {
-		c->searchhost = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
-	} else if (str_ieq(key, "aurfirst")) {
-		c->aurfirst = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
-	} else if (str_ieq(key, "NixChannel")) {
+		} else if (str_ieq(key, "searchflatpak")) {
+			c->searchflatpak = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
+		} else if (str_ieq(key, "searchhost")) {
+			c->searchhost = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
+		} else if (str_ieq(key, "aurfirst")) {
+			c->aurfirst = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
+		} else if (str_ieq(key, "NixChannel")) {
 			free(c->nixchannel);
 			c->nixchannel = xstrdup(val);
 		} else if (str_ieq(key, "AurBase")) {
 			free(c->aurbase);
 			c->aurbase = xstrdup(val);
-	} else if (str_ieq(key, "sudobin")) {
-		free(c->sudobin);
-		c->sudobin = xstrdup(val);
-	} else if (str_ieq(key, "hostsrepo")) {
-		free(c->hostsrepo);
-		c->hostsrepo = xstrdup(val);
-	} else if (str_ieq(key, "NyaCacheDir")) {
+		} else if (str_ieq(key, "sudobin")) {
+			free(c->sudobin);
+			c->sudobin = xstrdup(val);
+		} else if (str_ieq(key, "hostsrepo")) {
+			free(c->hostsrepo);
+			c->hostsrepo = xstrdup(val);
+		} else if (str_ieq(key, "NyaCacheDir")) {
 			free(c->nyacache);
 			c->nyacache = xstrdup(val);
+		} else if (str_ieq(key, "PkgOrder")) {
+			strs_free(&c->pkgorder);
+			memset(&c->pkgorder, 0, sizeof c->pkgorder);
+			cfg_add_str(&c->pkgorder, val);
 		}
 	} else if (str_ieq(key, "Server")) {
 		if (!strs_has(&r->servers, val)) strs_add(&r->servers, val);
@@ -400,6 +407,11 @@ static void write_options(FILE *f, config *c, int from_pac) {
 	fprintf(f, "sudobin = %s\n", c->sudobin ? c->sudobin : "sudo");
 	fprintf(f, "hostsrepo = %s\n", c->hostsrepo ? c->hostsrepo : "https://adachippp.github.io/nya-hosts");
 	if (c->aurfirst) fprintf(f, "aurfirst = true\n"); else fprintf(f, "#aurfirst = true\n");
+	if (c->pkgorder.n > 0) {
+		fprintf(f, "PkgOrder =");
+		for (i = 0; i < c->pkgorder.n; i++) fprintf(f, " %s", c->pkgorder.v[i]);
+		fprintf(f, "\n");
+	}
 	(void)from_pac;
 }
 
@@ -433,14 +445,16 @@ int config_read_pacman(config *c, const char *pacpath) {
 }
 
 int config_save_kv(const char *path, const char *key, const char *val) {
-	config *c = config_alloc();		if (is_file(path)) {
-			if (parse_config_file(c, path, 0, NULL) != 0) {
-				config_free(c);
-				return -1;
-			}
-		} else {
-			config *pac = config_alloc();			if (config_read_pacman(pac, "/etc/pacman.conf") == 0) {
-				free(c->rootdir); c->rootdir = xstrdup(pac->rootdir);
+	config *c = config_alloc();
+	if (is_file(path)) {
+		if (parse_config_file(c, path, 0, NULL) != 0) {
+			config_free(c);
+			return -1;
+		}
+	} else {
+		config *pac = config_alloc();
+		if (config_read_pacman(pac, "/etc/pacman.conf") == 0) {
+			free(c->rootdir); c->rootdir = xstrdup(pac->rootdir);
 			free(c->dbpath); c->dbpath = xstrdup(pac->dbpath);
 			free(c->arch); c->arch = xstrdup(pac->arch);
 			strs_free(&c->cachedirs); c->cachedirs = pac->cachedirs;

@@ -21,7 +21,7 @@
 #include <sys/file.h>
 #include <strings.h>
 
-#define NYA_VERSION "4.2.0"
+#define NYA_VERSION "5.1.0"
 
 typedef struct {
 	char **v;
@@ -189,6 +189,7 @@ typedef struct config {
 	int searchflatpak;
 	int searchhost;
 	int aurfirst;
+	strs pkgorder;
 	repo **repos;
 	int nrepos;
 } config;
@@ -255,6 +256,8 @@ typedef struct pkg {
 	int is_upgrade;
 	int is_reinstall;
 	int is_dep;
+	int files_loaded;
+	int install_loaded;
 	int nfiles;
 	int nowners;
 } pkg;
@@ -281,8 +284,13 @@ extern int g_nlocal;
 extern hmap *g_owner;
 
 int db_load_all(config *c);
+int db_load_sync_all(config *c);
+int db_load_all_light(config *c);
+int db_load_sync_light(config *c, const char *dbfile, const char *reponame);
 int db_load_sync(config *c, const char *dbfile, const char *reponame);
 int db_load_local(config *c);
+int db_load_local_light(config *c);
+int db_load_local_pkg_files(config *c, pkg *p);
 int pkg_load_mtree(pkg *p);
 void pkg_unload_mtree(pkg *p);
 void db_local_owners_sub(const char *relpath, const char *pkgname);
@@ -348,6 +356,7 @@ void txn_add_add(txn *t, pkg *p);
 void txn_add_rm(txn *t, pkg *p);
 int txn_build_install(config *c, const char **targets, int ntargets, txn *t, strs *notfound);
 int txn_build_remove(config *c, const char **targets, int ntargets, int recursive, int nosave, int cascade, int unneeded, txn *t, strs *notfound);
+int required_by_any(config *c, txn *t, pkg *target);
 int txn_build_upgrade(config *c, txn *t);
 int txn_prepare(config *c, txn *t);
 int txn_file_conflicts(config *c, txn *t);
@@ -369,6 +378,8 @@ int do_files(config *c, const char **targets, int n);
 int do_check(config *c, const char **targets, int n, int deep);
 int do_owns(config *c, const char *path);
 int do_clean(config *c, int all);
+int do_read_pkg(config *c);
+int do_remove_unneeded(config *c);
 
 int aur_search(config *c, const char *term, int quiet);
 int aur_search_multi(config *c, const char **terms, int n);
@@ -384,6 +395,7 @@ int nix_search(config *c, const char *term);
 int nix_info(config *c, const char *name);
 int nix_update(config *c);
 int nix_search_any(config *c, const char **terms, int n);
+int nix_install(config *c, const char *name);
 int fp_run(int argc, char **argv);
 int fp_search(config *c, const char **terms, int n);
 int fp_update(config *c);

@@ -355,7 +355,24 @@ static void files_into_pkg(pkg *p, const char *data) {
 	}
 }
 
+#define DB_LOAD_DESC_ONLY 1
+#define DB_LOAD_FILES 2
+#define DB_LOAD_DEPENDS 3
+#define DB_LOAD_MTREE 4
+
+int db_load_sync_with_flags(config *c, const char *dbfile, const char *reponame, int flags);
+
 int db_load_sync(config *c, const char *dbfile, const char *reponame) {
+	return db_load_sync_with_flags(c, dbfile, reponame, 0);
+}
+
+int db_load_sync_light(config *c, const char *dbfile, const char *reponame) {
+	/* Lightweight sync DB load - only reads desc, skips files/depends/mtree.
+	 * Use for search operations that only need package names/descriptions. */
+	return db_load_sync_with_flags(c, dbfile, reponame, DB_LOAD_DESC_ONLY);
+}
+
+int db_load_sync_with_flags(config *c, const char *dbfile, const char *reponame, int flags) {
 	(void)c;
 	if (!is_file(dbfile)) return 0;
 	rd *r = rd_open_compressed(dbfile);
@@ -412,8 +429,8 @@ int db_load_sync(config *c, const char *dbfile, const char *reponame) {
 				desc_into_pkg(cur, data);
 				if (g_sync_name && cur->name && !hmap_has(g_sync_name, cur->name)) hmap_put(g_sync_name, cur->name, cur);
 			}
-			else if (strcmp(fname, "files") == 0) files_into_pkg(cur, data);
-			else if (strcmp(fname, "depends") == 0) {
+			else if (flags & DB_LOAD_FILES && strcmp(fname, "files") == 0) files_into_pkg(cur, data);
+			else if (flags & DB_LOAD_DEPENDS && strcmp(fname, "depends") == 0) {
 				strs tmp;
 				memset(&tmp, 0, sizeof tmp);
 				strs_split_ws(data, &tmp);
@@ -422,11 +439,131 @@ int db_load_sync(config *c, const char *dbfile, const char *reponame) {
 					if (!strs_has(&cur->depends, tmp.v[i])) strs_add(&cur->depends, tmp.v[i]);
 				}
 				strs_free(&tmp);
-			} else if (strcmp(fname, "mtree") == 0) cur->has_mtree = 1;
+			} else if (flags & DB_LOAD_MTREE && strcmp(fname, "mtree") == 0) cur->has_mtree = 1;
 			free(data);
 		}
 	}
 	rd_close(r);
+	return 0;
+}
+
+int db_load_local_light(config *c) {
+	/* Lightweight local DB load - only reads desc files, skips files/mtree/install.
+	 * Use db_load_local_pkg_files() to load file lists for specific packages when needed. */
+	free(g_local);
+	g_local = NULL;
+	g_nlocal = 0;
+	if (g_local_idx) {
+		hmap_free(g_local_idx);
+		g_local_idx = NULL;
+	}
+	if (g_local_dir_idx) {
+		hmap_free(g_local_dir_idx);
+		g_local_dir_idx = NULL;
+	}
+	char localdir[4096];
+	snprintf(localdir, sizeof localdir, "%s/local", c->dbpath);
+	DIR *d = opendir(localdir);
+	if (!d) {
+		mkdir_p(localdir, 0755);
+		d = opendir(localdir);
+		if (!d) {
+			db_owner_map_free();
+			return -1;
+		}
+	}
+	struct dirent *de;
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.') continue;
+		char entry[4096];
+		snprintf(entry, sizeof entry, "%s/%s", localdir, de->d_name);
+		if (!is_dir(entry)) continue;
+		pkg *p = pkg_new("local");
+		p->is_local = 1;
+		char path[4600];
+		snprintf(path, sizeof path, "%s/desc", entry);
+		char *data = read_file(path, NULL);
+		if (!data) {
+			pkg_free(p);
+			closedir(d);
+			db_owner_map_free();
+			return -1;
+		}
+		desc_into_pkg(p, data);
+		free(data);
+		snprintf(path, sizeof path, "%s/nya-host", entry);
+		if (is_file(path)) p->is_host = 1;
+		/* Skip files, mtree, install - lazy load later if needed */
+		if (!p->name) {
+			char name[512], ver[512];
+			name_version_split(de->d_name, name, sizeof name, ver, sizeof ver);
+			p->name = xstrdup(name);
+			if (!p->version) p->version = xstrdup(ver);
+		}
+		local_add(p);
+		if (p->name && p->version) db_local_owners_add_pkg(p);
+	}
+	closedir(d);
+	db_build_owner_map();
+	return 0;
+}
+
+int db_load_local_pkg_files(config *c, pkg *p) {
+	/* Load files/mtree/install for a single package on demand */
+	if (p->files_loaded) return 0;
+	char entry[4096];
+	snprintf(entry, sizeof entry, "%s/local/%s", c->dbpath, p->name);
+	/* Try to find the exact version directory */
+	char *localdir_path = NULL;
+	if (g_local_idx) {
+		localdir_path = *(char **)hmap_get(g_local_idx, p->name);
+	}
+	if (!localdir_path) {
+		/* Package not found in index, search by version */
+		char search[4096];
+		snprintf(search, sizeof search, "%s/local", c->dbpath);
+		DIR *d = opendir(search);
+		if (d) {
+			struct dirent *de;
+			while ((de = readdir(d)) != NULL) {
+				if (de->d_name[0] == '.') continue;
+				if (strncmp(de->d_name, p->name, strlen(p->name)) == 0) {
+					snprintf(entry, sizeof entry, "%s/%s", search, de->d_name);
+					if (is_dir(entry)) {
+						localdir_path = xstrdup(entry);
+						break;
+					}
+				}
+			}
+			closedir(d);
+		}
+	}
+	if (!localdir_path) return -1;
+	
+	char path[4600];
+	snprintf(path, sizeof path, "%s/files", localdir_path);
+	char *data = read_file(path, NULL);
+	if (data) {
+		files_into_pkg(p, data);
+		p->files_loaded = 1;
+		free(data);
+	}
+	snprintf(path, sizeof path, "%s/mtree", localdir_path);
+	if (is_file(path)) {
+		p->has_mtree = 1;
+		snprintf(p->mtree_path, sizeof p->mtree_path, "%s", path);
+	}
+	snprintf(path, sizeof path, "%s/install", localdir_path);
+	if (is_file(path)) {
+		long ilen = 0;
+		data = read_file(path, &ilen);
+		if (data) {
+			p->install_data = data;
+			p->install_len = ilen;
+			p->install_loaded = 1;
+		}
+	}
+	free(localdir_path);
 	return 0;
 }
 
@@ -526,6 +663,51 @@ void pkg_unload_mtree(pkg *p) {
 	free(p->mtree_data);
 	p->mtree_data = NULL;
 	p->mtree_len = 0;
+}
+
+int db_load_sync_all(config *c) {
+	/* Load only sync DBs, not local - for operations that only need repo packages */
+	int i;
+	if (g_sync_idx) hmap_free(g_sync_idx);
+	g_sync_idx = hmap_new(1 << 17);
+	if (g_sync_name) hmap_free(g_sync_name);
+	g_sync_name = hmap_new(1 << 17);
+	for (i = 0; i < g_nsync; i++) sync_index_add(g_sync[i]);
+	for (i = 0; i < c->nrepos; i++) {
+		char dbfile[4096];
+		snprintf(dbfile, sizeof dbfile, "%s/sync/%s.db", c->dbpath, c->repos[i]->name);
+		if (is_file(dbfile)) {
+			db_load_sync(c, dbfile, c->repos[i]->name);
+		} else if (c->nrepos > 0) {
+			warn("no database file for repository '%s' (use 'nya update')", c->repos[i]->name);
+		}
+	}
+	g_local = NULL;
+	g_nlocal = 0;
+	rebuild_sync_prov();
+	return 0;
+}
+
+int db_load_all_light(config *c) {
+	/* Load sync DBs fully + local DB lightly - for install operations */
+	int i;
+	if (g_sync_idx) hmap_free(g_sync_idx);
+	g_sync_idx = hmap_new(1 << 17);
+	if (g_sync_name) hmap_free(g_sync_name);
+	g_sync_name = hmap_new(1 << 17);
+	for (i = 0; i < g_nsync; i++) sync_index_add(g_sync[i]);
+	for (i = 0; i < c->nrepos; i++) {
+		char dbfile[4096];
+		snprintf(dbfile, sizeof dbfile, "%s/sync/%s.db", c->dbpath, c->repos[i]->name);
+		if (is_file(dbfile)) {
+			db_load_sync(c, dbfile, c->repos[i]->name);
+		} else if (c->nrepos > 0) {
+			warn("no database file for repository '%s' (use 'nya update')", c->repos[i]->name);
+		}
+	}
+	db_load_local_light(c);
+	rebuild_sync_prov();
+	return 0;
 }
 
 int db_load_all(config *c) {

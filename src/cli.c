@@ -38,11 +38,14 @@ static void print_help(void) {
 	printf("  nya owns <path>               find which package owns a file (same as -Qo)\n");
 	printf("  nya clean [--all]             clean package cache (same as -Sc / -Scc)\n");
 	printf("  nya aur search|info|install <name>...   Arch User Repository (set 'aur = true')\n");
-	printf("  nya nix search|info|update <term>...    nixpkgs search via nix (set 'nix = true')\n");
+	printf("  nya nix search|info|update|install <term>...    nixpkgs via nix (set 'nix = true')\n");
 	printf("  nya -fp search|install|remove|list|update <app>...   flatpak integration\n");
 	printf("  nya host install|remove|update <name>...   build & install/update from nya-hosts git repos\n");
-	printf("\ninstall fallback: repos -> hosts -> aur -> flatpak (set 'aurfirst = true' to swap hosts/aur)\n");
-	printf("search sources in 'nya search': searchaur = true, searchnix = true, searchflatpak = true, searchhost = true\n");
+	printf("  nya --readpkg                 scan installed packages and save to /nya/world\n");
+	printf("  nya --remove-unneeded         remove packages not in /nya/world (with prompt)\n");
+	printf("\ninstall fallback order (set via PkgOrder, default: repos hosts aur nix flatpak):\n");
+	printf("  nya --save pkgorder \"repos hosts aur nix flatpak\"\n");
+	printf("\nsearch sources in 'nya search': searchaur = true, searchnix = true, searchflatpak = true, searchhost = true\n");
 	printf("hosts repo: set 'hostsrepo = <url-or-dir>' in [options] (default: https://adachippp.github.io/nya-hosts)\n");
 	printf("root elevation: set 'sudobin = sudo' or 'sudobin = doas' in [options] (default: sudo)\n");
 	printf("  nya --save <key> <value>      save a config option (sudobin, aur, searchaur, etc.)\n");
@@ -61,6 +64,7 @@ static void print_help(void) {
 	printf("  sudobin = sudo|doas   aur = true|false   searchaur = true|false\n");
 	printf("  searchhost = true|false   hostsrepo = <url>   aurfirst = true|false\n");
 	printf("  RefreshAge = <seconds>  (default 21600 = 6h, DBs younger than this are skipped)\n");
+	printf("  PkgOrder = repos hosts aur nix flatpak  (install fallback order)\n");
 }
 
 static int parse_long(cli *cl, const char *arg, int *i, int argc, char **argv) {
@@ -73,6 +77,14 @@ static int parse_long(cli *cl, const char *arg, int *i, int argc, char **argv) {
 	}
 	if (strcmp(arg, "--read-paconfig") == 0) {
 		cl->op = 'P';
+		return 0;
+	}
+	if (strcmp(arg, "--readpkg") == 0) {
+		cl->op = 'W';
+		return 0;
+	}
+	if (strcmp(arg, "--remove-unneeded") == 0) {
+		cl->op = 'X';
 		return 0;
 	}
 	if (strcmp(arg, "--user") == 0) {
@@ -386,6 +398,14 @@ static int word_command(cli *cl, const char *w) {
 		cl->op = 'c';
 		return 0;
 	}
+	if (strcmp(w, "readpkg") == 0) {
+		cl->op = 'W';
+		return 0;
+	}
+	if (strcmp(w, "remove-unneeded") == 0) {
+		cl->op = 'X';
+		return 0;
+	}
 	return -1;
 }
 
@@ -423,7 +443,7 @@ int txn_run(config *c, txn *t, int mode) {
 			txn_free(t);
 			return 1;
 		}
-	} else {
+	} else if (mode == 0) {
 		if (!yesno("Proceed with installation? ")) {
 			msg("operation cancelled >.<");
 			txn_free(t);
@@ -538,6 +558,11 @@ static void print_config(config *c) {
 	printf("SearchHost    = %s\n", (c->searchhost >= 0 ? c->searchhost : 1) ? "true" : "false");
 	printf("HostsRepo     = %s\n", c->hostsrepo ? c->hostsrepo : "(none)");
 	printf("AurFirst      = %s\n", c->aurfirst ? "true" : "false");
+	if (c->pkgorder.n > 0) {
+		printf("PkgOrder      = ");
+		for (i = 0; i < c->pkgorder.n; i++) printf("%s%s", c->pkgorder.v[i], i < c->pkgorder.n - 1 ? " " : "");
+		printf("\n");
+	}
 	for (i = 0; i < c->nrepos; i++) {
 		repo *r = c->repos[i];
 		printf("\n[%s]\n", r->name);
@@ -645,6 +670,31 @@ int cli_main(int argc, char **argv) {
 			error("failed to save %s = %s to %s", cl.save_key, cl.save_val, path);
 			strs_free(&cl.targets);
 			return 1;
+		}
+		if (strcmp(cl.save_key, "pkgorder") == 0) {
+			strs saved;
+			memset(&saved, 0, sizeof saved);
+			strs_split_ws(cl.save_val, &saved);
+			if (saved.n == 0) {
+				error("pkgorder must contain at least one source");
+				strs_free(&saved);
+				strs_free(&cl.targets);
+				return 1;
+			}
+			int j;
+			for (j = 0; j < saved.n; j++) {
+				if (strcmp(saved.v[j], "repos") != 0 &&
+					strcmp(saved.v[j], "hosts") != 0 &&
+					strcmp(saved.v[j], "aur") != 0 &&
+					strcmp(saved.v[j], "nix") != 0 &&
+					strcmp(saved.v[j], "flatpak") != 0) {
+					error("invalid pkgorder source '%s' (must be repos, hosts, aur, nix, or flatpak)", saved.v[j]);
+					strs_free(&saved);
+					strs_free(&cl.targets);
+					return 1;
+				}
+			}
+			strs_free(&saved);
 		}
 		msg("saved %s = %s in %s", cl.save_key, cl.save_val, path);
 		strs_free(&cl.targets);
@@ -766,6 +816,8 @@ int cli_main(int argc, char **argv) {
 		else if (cl.op == 'S') need_root = cl.y || cl.u || cl.cclean > 0 || (cl.targets.n > 0 && !cl.s && cl.i == 0);
 		else if (cl.op == 'a' && cl.word && strcmp(cl.word, "install") == 0) need_root = 1;
 		else if (cl.op == 'H' && cl.word && strcmp(cl.word, "install") == 0) need_root = 1;
+		else if (cl.op == 'W') need_root = 1;  /* --readpkg writes to /nya/world */
+		else if (cl.op == 'X') need_root = 1;  /* --remove-unneeded removes packages */
 		if (need_root) {
 			char **args = xcalloc(argc + 2, sizeof *args);
 			args[0] = c->sudobin;
@@ -781,12 +833,31 @@ int cli_main(int argc, char **argv) {
 		}
 	}
 	int needs_dbs = 0;
-	if (cl.op == 'Q' || cl.op == 'R' || cl.op == 'U') needs_dbs = 1;
-	else if (cl.op == 'S') {
-		needs_dbs = !(cl.y && !cl.u && !cl.s && cl.i == 0 && cl.cclean == 0 && cl.targets.n == 0);
-	} else if (cl.op == 'a' || cl.op == 'H') needs_dbs = 1;
+	int load_mode = 0;  /* 0=full, 1=light local, 2=light sync (search) */
+	if (cl.op == 'Q' || cl.op == 'R' || cl.op == 'U' || cl.op == 'W' || cl.op == 'X') {
+		needs_dbs = 1;
+		load_mode = 0;  /* Full DB */
+	} else if (cl.op == 'S') {
+		if (cl.y && !cl.u && !cl.s && cl.i == 0 && cl.cclean == 0 && cl.targets.n == 0) {
+			needs_dbs = 0;  /* Just a sync, no DBs needed */
+		} else if (cl.targets.n > 0 && cl.i == 0 && cl.s == 0) {
+			/* Install operation - need sync DB + light local DB */
+			needs_dbs = 1;
+			load_mode = 1;  /* Light local DB */
+		} else {
+			needs_dbs = 1;
+			load_mode = 0;  /* Full DB */
+		}
+	} else if (cl.op == 'a' || cl.op == 'H') {
+		needs_dbs = 1;
+		load_mode = 0;  /* Full DB */
+	}
 	if (needs_dbs) {
-		db_load_all(c);
+		if (load_mode == 1) {
+			db_load_all_light(c);  /* Sync full + local light */
+		} else {
+			db_load_all(c);
+		}
 		db_check_corruption(c);
 	}
 	int rc = 0;
@@ -1029,7 +1100,7 @@ int cli_main(int argc, char **argv) {
 	}
 	case 'n': {
 		if (!cl.word) {
-			error("nix operation required: search|info|update");
+			error("nix operation required: search|info|update|install");
 			rc = 1;
 			break;
 		}
@@ -1045,6 +1116,16 @@ int cli_main(int argc, char **argv) {
 			} else rc = nix_info(c, cl.targets.v[0]);
 		} else if (strcmp(cl.word, "update") == 0) {
 			rc = nix_update(c);
+		} else if (strcmp(cl.word, "install") == 0) {
+			if (cl.targets.n == 0) {
+				error("no package specified");
+				rc = 1;
+			} else {
+				int j;
+				for (j = 0; j < cl.targets.n; j++) {
+					if (nix_install(c, cl.targets.v[j]) != 0) rc = 1;
+				}
+			}
 		} else {
 			error("unknown nix operation '%s'", cl.word);
 			rc = 1;
@@ -1149,6 +1230,14 @@ int cli_main(int argc, char **argv) {
 		for (j = 0; j < cl.targets.n; j++) args[j + 1] = cl.targets.v[j];
 		rc = fp_run(cl.targets.n + 1, args);
 		free(args);
+		break;
+	}
+	case 'W': {
+		rc = do_read_pkg(c);
+		break;
+	}
+	case 'X': {
+		rc = do_remove_unneeded(c);
 		break;
 	}
 	default:

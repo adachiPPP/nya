@@ -144,3 +144,16 @@ int nix_update(config *c) {
 	}
 	return rc;
 }
+
+int nix_install(config *c, const char *name) {
+	if (!nix_enabled(c)) return -1;
+	info("installing %s via nix...", name);
+	char *argv[] = {"nix", "profile", "install", (char *)name, NULL};
+	int rc = run_cmd(argv);
+	if (rc != 0) {
+		error("nix install failed for %s", name);
+		return -1;
+	}
+	msg("installed %s via nix", name);
+	return 0;
+}

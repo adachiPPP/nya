@@ -287,12 +287,39 @@ int txn_build_install(config *c, const char **targets, int ntargets, txn *t, str
 				}
 
 				int done = 0;
-				if (c->aurfirst) {
-					if (c->aur && aur_build_install(c, dep.name, t) == 0) done = 1;
-					else if (host_try_install(c, dep.name) == 0) done = 1;
-				} else {
-					if (host_try_install(c, dep.name) == 0) done = 1;
-					else if (c->aur && aur_build_install(c, dep.name, t) == 0) done = 1;
+				int i;
+				for (i = 0; i < c->pkgorder.n; i++) {
+					const char *src = c->pkgorder.v[i];
+					if (strcmp(src, "repos") == 0) {
+						if (p) { done = 1; break; }
+					} else if (strcmp(src, "hosts") == 0) {
+						if (!done && host_try_install(c, dep.name) == 0) done = 1;
+					} else if (strcmp(src, "aur") == 0) {
+						if (!done && c->aur && aur_build_install(c, dep.name, t) == 0) done = 1;
+				} else if (strcmp(src, "nix") == 0) {
+					if (!done && c->nix && nix_install(c, dep.name) == 0) done = 1;
+					} else if (strcmp(src, "flatpak") == 0) {
+						if (!done && fp_available()) {
+							char *fpname = xstrdup(dep.name);
+							if (fpname[0] == 'o' && fpname[1] == 'r' && fpname[2] == 'g' && !strchr(fpname + 3, '.')) {
+								char *dot = strchr(fpname, '.');
+								if (dot) *dot = '/';
+							}
+							char **fpargs = xcalloc(3, sizeof *fpargs);
+							fpargs[0] = (char *)"install";
+							fpargs[1] = fpname;
+							if (fp_run(2, fpargs) == 0) {
+								msg("installed %s via flatpak", dep.name);
+								free(fpname);
+								free(fpargs);
+								done = 1;
+								continue;
+							}
+							free(fpname);
+							free(fpargs);
+						}
+					}
+					if (done) break;
 				}
 				if (done) {
 					depspec_free(&dep);
@@ -579,7 +606,7 @@ int txn_build_upgrade(config *c, txn *t) {
 	return txn_prepare(c, t);
 }
 
-static int required_by_any(config *c, txn *t, pkg *target) {
+int required_by_any(config *c, txn *t, pkg *target) {
 	(void)c;
 	int i, j;
 	for (i = 0; i < g_nlocal; i++) {
