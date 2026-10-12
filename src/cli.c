@@ -1104,6 +1104,27 @@ int cli_main(int argc, char **argv) {
 			rc = 1;
 			break;
 		}
+		/* Check if nix is enabled first - only elevate if it is */
+		if (!c->nix) {
+			/* nix disabled - let nix_search/nix_info handle the error */
+		} else if (geteuid() != 0 && c->sudobin && *c->sudobin) {
+			int nix_needs_root = (strcmp(cl.word, "search") == 0 ||
+			                      strcmp(cl.word, "info") == 0 ||
+			                      strcmp(cl.word, "update") == 0);
+			if (nix_needs_root) {
+				char **args = xcalloc(argc + 2, sizeof *args);
+				args[0] = c->sudobin;
+				int ai;
+				for (ai = 0; ai < argc; ai++) args[ai + 1] = argv[ai];
+				args[argc + 1] = NULL;
+				execvp(c->sudobin, args);
+				error("failed to elevate via '%s' (install it, or run nya as root)", c->sudobin);
+				free(args);
+				config_free(c);
+				strs_free(&cl.targets);
+				return 1;
+			}
+		}
 		if (strcmp(cl.word, "search") == 0) {
 			if (cl.targets.n == 0) {
 				error("no search term specified");

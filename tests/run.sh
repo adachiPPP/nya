@@ -423,7 +423,7 @@ NYA_CONF="$ROOT/auto/nya.conf" $NYA config >/dev/null 2>&1 || true
 ok "first-use config generation"
 
 echo "== version/help =="
-$NYA --version | grep -q "5.1.0" || fail "--version"
+$NYA --version | grep -q "5.1.2" || fail "--version"
 $NYA --help | grep -q "nya install" || fail "--help"
 echo "ok: version/help"
 echo "== sync vs update =="
