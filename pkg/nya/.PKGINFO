@@ -6,9 +6,9 @@ xdata = pkgtype=pkg
 pkgver = 5.1.2-1
 pkgdesc = A pacman-compatible feature packed lightweight package manager written in C, with AUR, nix searching and flatpak support
 url = https://github.com/adachiPPP/nya
-builddate = 1791832428
+builddate = 1791909942
 packager = Unknown Packager
-size = 228816
+size = 228824
 arch = x86_64
 license = custom
 depend = curl

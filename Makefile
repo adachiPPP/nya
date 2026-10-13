@@ -1,5 +1,5 @@
 CC ?= cc
-CFLAGS ?= -O2 -Wall -Wextra -std=gnu11
+CFLAGS ?= -O2 -Wall -Wextra -std=gnu11 -fPIC
 PKG_CFLAGS := $(shell pkg-config --cflags libcurl libzstd liblzma zlib 2>/dev/null)
 PKG_LIBS := $(shell pkg-config --libs libcurl libzstd liblzma zlib 2>/dev/null)
 SRCS := $(wildcard src/*.c)

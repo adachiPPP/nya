@@ -7,18 +7,18 @@ call pacman — every operation (database parsing, dependency resolution,
 download, extraction, scriptlets, hooks, removal) is implemented natively.
 
 ## Info
+
 the package manager can automatically find packages **IF ENABLED IN THE CONFIG** from flatpak, aur, hosts, and pacman.
 
 the install priority = **pacman** -> **hosts** <-> **aur** -> **flatpak**
 (hosts and aur are swappable: set `aurfirst = true` in `[options]` for
 pacman -> aur -> hosts -> flatpak)
 
-*Note: you can search nix packages but the whole purpose of nix is being configured from flakes so you can use nya to search for nix packages not to install them*
+*Note: you can search + install (imperative) nix packages but the whole purpose of nix is being configured from flakes so you can use nya to search for nix packages not to install them*
 
 ## Building
 
-dependencies: `libcurl`, `zlib`, `libzstd`, `liblzma` (dev headers) and a C
-compiler.
+dependencies: `libcurl`, `zlib`, `libzstd`, `liblzma` (dev headers) and a C compiler.
 
 ```sh
 make            # builds ./nya
