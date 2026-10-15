@@ -124,7 +124,7 @@ int nix_info(config *c, const char *name) {
 int nix_search_any(config *c, const char **terms, int n) {
 	(void)c;
 	if (!nix_available()) return 0;
-	int argc = n + 6;  /* nix + 2 flags + search + nixpkgs + terms + json + null */
+	int argc = n + 6;  
 	char **argv = xcalloc(argc, sizeof *argv);
 	argv[0] = "nix";
 	argv[1] = "--extra-experimental-features";

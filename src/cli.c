@@ -816,8 +816,8 @@ int cli_main(int argc, char **argv) {
 		else if (cl.op == 'S') need_root = cl.y || cl.u || cl.cclean > 0 || (cl.targets.n > 0 && !cl.s && cl.i == 0);
 		else if (cl.op == 'a' && cl.word && strcmp(cl.word, "install") == 0) need_root = 1;
 		else if (cl.op == 'H' && cl.word && strcmp(cl.word, "install") == 0) need_root = 1;
-		else if (cl.op == 'W') need_root = 1;  /* --readpkg writes to /nya/world */
-		else if (cl.op == 'X') need_root = 1;  /* --remove-unneeded removes packages */
+		else if (cl.op == 'W') need_root = 1;  
+		else if (cl.op == 'X') need_root = 1;  
 		if (need_root) {
 			char **args = xcalloc(argc + 2, sizeof *args);
 			args[0] = c->sudobin;
@@ -833,28 +833,28 @@ int cli_main(int argc, char **argv) {
 		}
 	}
 	int needs_dbs = 0;
-	int load_mode = 0;  /* 0=full, 1=light local, 2=light sync (search) */
+	int load_mode = 0;  
 	if (cl.op == 'Q' || cl.op == 'R' || cl.op == 'U' || cl.op == 'W' || cl.op == 'X') {
 		needs_dbs = 1;
-		load_mode = 0;  /* Full DB */
+		load_mode = 0;  
 	} else if (cl.op == 'S') {
 		if (cl.y && !cl.u && !cl.s && cl.i == 0 && cl.cclean == 0 && cl.targets.n == 0) {
-			needs_dbs = 0;  /* Just a sync, no DBs needed */
+			needs_dbs = 0;  
 		} else if (cl.targets.n > 0 && cl.i == 0 && cl.s == 0) {
-			/* Install operation - need sync DB + light local DB */
+			
 			needs_dbs = 1;
-			load_mode = 1;  /* Light local DB */
+			load_mode = 1;  
 		} else {
 			needs_dbs = 1;
-			load_mode = 0;  /* Full DB */
+			load_mode = 0;  
 		}
 	} else if (cl.op == 'a' || cl.op == 'H') {
 		needs_dbs = 1;
-		load_mode = 0;  /* Full DB */
+		load_mode = 0;  
 	}
 	if (needs_dbs) {
 		if (load_mode == 1) {
-			db_load_all_light(c);  /* Sync full + local light */
+			db_load_all_light(c);  
 		} else {
 			db_load_all(c);
 		}
@@ -1104,9 +1104,9 @@ int cli_main(int argc, char **argv) {
 			rc = 1;
 			break;
 		}
-		/* Check if nix is enabled first - only elevate if it is */
+		
 		if (!c->nix) {
-			/* nix disabled - let nix_search/nix_info handle the error */
+			
 		} else if (geteuid() != 0 && c->sudobin && *c->sudobin) {
 			int nix_needs_root = (strcmp(cl.word, "search") == 0 ||
 			                      strcmp(cl.word, "info") == 0 ||

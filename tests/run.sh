@@ -416,6 +416,61 @@ grep -q "#aur = true" "$ROOT/nya-gen.conf" || fail "generated conf missing #aur"
 grep -q "#nix = true" "$ROOT/nya-gen.conf" || fail "generated conf missing #nix"
 ok "--read-paconfig"
 
+echo "== world: auto-save on install =="
+WORLD=$ROOT/root/nya/world
+# kitty was already installed by prior tests; a reinstall should NOT add duplicate entries
+$NYA $CFGARG install kitty --noconfirm >/dev/null || fail "reinstall kitty"
+[ -f "$WORLD/packages" ] || fail "world/packages exists"
+[ -f "$WORLD/depends" ] || fail "world/depends exists"
+KITTY_COUNT=$(grep -c "^kitty$" "$WORLD/packages" || true)
+[ "$KITTY_COUNT" -eq 1 ] || fail "kitty appears $KITTY_COUNT times in world/packages (should be exactly 1)"
+ok "world no duplicate on reinstall"
+
+echo "== world: deps saved =="
+grep -q "^hello: liba$" "$WORLD/depends" || fail "hello dependency on liba not in world/depends"
+ok "world deps saved"
+
+echo "== world: --readpkg rebuilds from scratch =="
+# wipe the auto-saved world and rebuild with --readpkg
+rm -f "$WORLD/packages" "$WORLD/depends"
+$NYA $CFGARG --readpkg || fail "--readpkg"
+[ -f "$WORLD/packages" ] || fail "--readpkg did not create packages"
+grep -q "^hello$" "$WORLD/packages" || fail "hello missing after --readpkg"
+grep -q "^liba (dep)" "$WORLD/packages" || fail "liba (dep) missing after --readpkg"
+grep -q "^kitty$" "$WORLD/packages" || fail "kitty missing after --readpkg"
+ok "--readpkg rebuilds world"
+
+echo "== world: remove-unneeded respects world =="
+# rebuild world, then remove kitty from it so remove-unneeded will prune it
+rm -f "$WORLD/packages" "$WORLD/depends"
+$NYA $CFGARG --readpkg >/dev/null || fail "--readpkg"
+# kitty is installed but not explicitly wanted — remove it from world
+sed -i '/^kitty$/d' "$WORLD/packages"
+sed -i '/^kitty:/d' "$WORLD/depends"
+$NYA $CFGARG remove-unneeded --noconfirm || fail "remove-unneeded"
+$NYA $CFGARG -Q | grep -q "hello" || fail "hello should remain (in world)"
+$NYA $CFGARG -Q | grep -q "liba" || fail "liba should remain (in world/depends)"
+$NYA $CFGARG -Q | grep -q "kitty" && fail "kitty should have been removed (not in world)"
+ok "remove-unneeded respects world"
+
+# verify that removing a package also removes it from world
+# hello is in world; remove it and check world is updated
+$NYA $CFGARG remove hello --noconfirm || fail "remove hello for world-removal test"
+[ -f "$WORLD/packages" ] || fail "world/packages should still exist after remove"
+grep -q "^hello$" "$WORLD/packages" && fail "hello should have been removed from world/packages"
+grep -q "^hello: liba$" "$WORLD/depends" && fail "hello dep line should have been removed from world/depends"
+# liba should remain in world (it was a dep of hello, not removed automatically)
+grep -qE "^liba(\(dep\))?" "$WORLD/packages" || fail "liba should still be in world/packages"
+ok "world updated on remove"
+
+# reinstall hello since we just removed it; later tests expect it
+$NYA $CFGARG install hello --noconfirm >/dev/null || fail "reinstall hello after remove"
+# also need liba as dep
+$NYA $CFGARG install liba --noconfirm >/dev/null || fail "install liba"
+
+# reinstall kitty since remove-unneeded just pruned it; later tests expect it
+$NYA $CFGARG install kitty --noconfirm >/dev/null || fail "reinstall kitty after remove-unneeded"
+
 echo "== first-use config generation =="
 mkdir -p "$ROOT/auto"
 NYA_CONF="$ROOT/auto/nya.conf" $NYA config >/dev/null 2>&1 || true
@@ -423,7 +478,7 @@ NYA_CONF="$ROOT/auto/nya.conf" $NYA config >/dev/null 2>&1 || true
 ok "first-use config generation"
 
 echo "== version/help =="
-$NYA --version | grep -q "5.1.2" || fail "--version"
+$NYA --version | grep -q "5.1.3" || fail "--version"
 $NYA --help | grep -q "nya install" || fail "--help"
 echo "ok: version/help"
 echo "== sync vs update =="

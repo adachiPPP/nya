@@ -1090,6 +1090,8 @@ int txn_commit(config *c, txn *t) {
 	driver_post_install(t);
 	log_alpm("transaction completed");
 	unlock_db();
+	save_world_additions(c, t);
+	save_world_removals(c, t);
 	g_nlocal = 0;
 	free(g_local);
 	g_local = NULL;

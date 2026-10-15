@@ -367,8 +367,7 @@ int db_load_sync(config *c, const char *dbfile, const char *reponame) {
 }
 
 int db_load_sync_light(config *c, const char *dbfile, const char *reponame) {
-	/* Lightweight sync DB load - only reads desc, skips files/depends/mtree.
-	 * Use for search operations that only need package names/descriptions. */
+	
 	return db_load_sync_with_flags(c, dbfile, reponame, DB_LOAD_DESC_ONLY);
 }
 
@@ -448,8 +447,7 @@ int db_load_sync_with_flags(config *c, const char *dbfile, const char *reponame,
 }
 
 int db_load_local_light(config *c) {
-	/* Lightweight local DB load - only reads desc files, skips files/mtree/install.
-	 * Use db_load_local_pkg_files() to load file lists for specific packages when needed. */
+	
 	free(g_local);
 	g_local = NULL;
 	g_nlocal = 0;
@@ -493,7 +491,7 @@ int db_load_local_light(config *c) {
 		free(data);
 		snprintf(path, sizeof path, "%s/nya-host", entry);
 		if (is_file(path)) p->is_host = 1;
-		/* Skip files, mtree, install - lazy load later if needed */
+		
 		if (!p->name) {
 			char name[512], ver[512];
 			name_version_split(de->d_name, name, sizeof name, ver, sizeof ver);
@@ -509,17 +507,17 @@ int db_load_local_light(config *c) {
 }
 
 int db_load_local_pkg_files(config *c, pkg *p) {
-	/* Load files/mtree/install for a single package on demand */
+	
 	if (p->files_loaded) return 0;
 	char entry[4096];
 	snprintf(entry, sizeof entry, "%s/local/%s", c->dbpath, p->name);
-	/* Try to find the exact version directory */
+	
 	char *localdir_path = NULL;
 	if (g_local_idx) {
 		localdir_path = *(char **)hmap_get(g_local_idx, p->name);
 	}
 	if (!localdir_path) {
-		/* Package not found in index, search by version */
+		
 		char search[4096];
 		snprintf(search, sizeof search, "%s/local", c->dbpath);
 		DIR *d = opendir(search);
@@ -666,7 +664,7 @@ void pkg_unload_mtree(pkg *p) {
 }
 
 int db_load_sync_all(config *c) {
-	/* Load only sync DBs, not local - for operations that only need repo packages */
+	
 	int i;
 	if (g_sync_idx) hmap_free(g_sync_idx);
 	g_sync_idx = hmap_new(1 << 17);
@@ -689,7 +687,7 @@ int db_load_sync_all(config *c) {
 }
 
 int db_load_all_light(config *c) {
-	/* Load sync DBs fully + local DB lightly - for install operations */
+	
 	int i;
 	if (g_sync_idx) hmap_free(g_sync_idx);
 	g_sync_idx = hmap_new(1 << 17);

@@ -105,6 +105,100 @@ static strs *load_world_deps(config *c) {
 	return deps;
 }
 
+void save_world_additions(config *c, txn *t) {
+	if (!t || t->nadd == 0) return;
+	const char *wd = world_dir_for(c);
+	mkdir_p(wd, 0755);
+
+	char path[4096];
+	snprintf(path, sizeof path, "%s/packages", wd);
+	FILE *pkgsf = fopen(path, "a");
+	if (!pkgsf) return;
+
+	snprintf(path, sizeof path, "%s/depends", wd);
+	FILE *depf = fopen(path, "a");
+	if (!depf) { fclose(pkgsf); return; }
+
+	int i;
+	for (i = 0; i < t->nadd; i++) {
+		pkg *p = t->add[i];
+		if (!p->name) continue;	if (is_in_world(c, p->name)) continue;
+	fprintf(pkgsf, "%s\n", p->name);
+	int j;
+	for (j = 0; j < p->depends.n; j++) {
+		fprintf(depf, "%s: %s\n", p->name, p->depends.v[j]);
+	}
+	}
+	fclose(pkgsf);
+	fclose(depf);
+}
+
+void save_world_removals(config *c, txn *t) {
+	if (!t || t->nrm == 0) return;
+	const char *wd = world_dir_for(c);
+	char path[4096];
+
+	snprintf(path, sizeof path, "%s/packages", wd);
+	FILE *f = fopen(path, "r");
+	if (f) {
+		char tmp[4300];
+		snprintf(tmp, sizeof tmp, "%s.tmp", path);
+		FILE *o = fopen(tmp, "w");
+		if (o) {
+			char line[4096];
+			while (fgets(line, sizeof line, f)) {
+				char *nl = strchr(line, '\n');
+				if (nl) *nl = '\0';
+				int keep = 1;
+				int i;
+				for (i = 0; i < t->nrm; i++) {
+					if (t->rm[i]->name && strcmp(line, t->rm[i]->name) == 0) {
+						keep = 0;
+						break;
+					}
+				}
+				if (keep) fprintf(o, "%s\n", line);
+			}
+			fclose(o);
+			fclose(f);
+			rename(tmp, path);
+		} else {
+			fclose(f);
+		}
+	}
+
+	snprintf(path, sizeof path, "%s/depends", wd);
+	f = fopen(path, "r");
+	if (f) {
+		char tmp[4300];
+		snprintf(tmp, sizeof tmp, "%s.tmp", path);
+		FILE *o = fopen(tmp, "w");
+		if (o) {
+			char line[4096];
+			while (fgets(line, sizeof line, f)) {
+				char *nl = strchr(line, '\n');
+				if (nl) *nl = '\0';
+				char *colon = strchr(line, ':');
+				if (colon) *colon = '\0';
+				int keep = 1;
+				int i;
+				for (i = 0; i < t->nrm; i++) {
+					if (t->rm[i]->name && strcmp(line, t->rm[i]->name) == 0) {
+						keep = 0;
+						break;
+					}
+				}
+				if (keep) fprintf(o, "%s: %s\n", line, colon ? nl + 1 : "");
+			}
+			fclose(o);
+			fclose(f);
+			rename(tmp, path);
+		} else {
+			fclose(f);
+		}
+	}
+}
+
 int do_remove_unneeded(config *c) {
 	const char *world_dir = world_dir_for(c);
 	if (!is_dir(world_dir)) {

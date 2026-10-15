@@ -21,7 +21,7 @@
 #include <sys/file.h>
 #include <strings.h>
 
-#define NYA_VERSION "5.1.2"
+#define NYA_VERSION "5.1.3"
 
 typedef struct {
 	char **v;
@@ -380,6 +380,8 @@ int do_owns(config *c, const char *path);
 int do_clean(config *c, int all);
 int do_read_pkg(config *c);
 int do_remove_unneeded(config *c);
+void save_world_additions(config *c, txn *t);
+void save_world_removals(config *c, txn *t);
 
 int aur_search(config *c, const char *term, int quiet);
 int aur_search_multi(config *c, const char **terms, int n);
