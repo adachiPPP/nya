@@ -1,0 +1,3 @@
+src/*.o
+./*pkg.tar.zst
+./nya.debug
