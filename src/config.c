@@ -119,6 +119,9 @@ static void cfg_add_str(strs *s, const char *val) {
 			c->aur = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
 		} else if (str_ieq(key, "nix")) {
 			c->nix = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
+		} else if (str_ieq(key, "declarative") || str_ieq(key, "declarativebuild") ||
+		           str_ieq(key, "declarative-build") || str_ieq(key, "decl")) {
+			c->declarative = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0 || *val == '\0';
 		} else if (str_ieq(key, "searchaur")) {
 			c->searchaur = str_ieq(val, "true") || str_ieq(val, "yes") || atoi(val) > 0;
 		} else if (str_ieq(key, "searchnix")) {
@@ -161,6 +164,9 @@ static void config_apply_flag(config *c, repo *r, const char *name) {
 	else if (str_ieq(name, "VerbosePkgLists")) c->verbosepkglists = 1;
 	else if (str_ieq(name, "CheckSpace")) {
 	} else if (str_ieq(name, "ILoveCandy")) {
+	} else if (str_ieq(name, "declarative") || str_ieq(name, "declarativebuild") ||
+	           str_ieq(name, "declarative-build") || str_ieq(name, "decl")) {
+		c->declarative = 1;
 	}
 }
 
@@ -299,6 +305,12 @@ config *config_load(const char *path, int *generated) {
 	if (generated) *generated = 0;
 	if (!path) path = "/etc/nya.conf";
 	c->path = xstrdup(path);
+	if (path[0] == '/') {
+		char parent[4096];
+		snprintf(parent, sizeof parent, "%s", path);
+		char *slash = strrchr(parent, '/');
+		if (slash) { *slash = '\0'; mkdir_p(parent, 0755); }
+	}
 	if (is_file(path)) {
 		if (parse_config_file(c, path, 0, NULL) != 0) {
 			error("could not read config file %s", path);
@@ -327,19 +339,13 @@ config *config_load(const char *path, int *generated) {
 
 config *config_discover(void) {
 	const char *env = getenv("NYA_CONF");
-	char path[4096];
-	const char *home = getenv("HOME");
 	if (env && *env) {
 		return config_load(env, NULL);
 	}
 	if (is_file("./nya.conf")) {
 		return config_load("./nya.conf", NULL);
 	}
-	if (home) {
-		snprintf(path, sizeof path, "%s/.config/nya/nya.conf", home);
-		if (is_file(path)) return config_load(path, NULL);
-	}
-	return config_load("/etc/nya.conf", NULL);
+	return config_load("/nya/nya.conf", NULL);
 }
 
 const char *cfg_rooted(const config *c, const char *path) {
@@ -407,6 +413,7 @@ static void write_options(FILE *f, config *c, int from_pac) {
 	fprintf(f, "sudobin = %s\n", c->sudobin ? c->sudobin : "sudo");
 	fprintf(f, "hostsrepo = %s\n", c->hostsrepo ? c->hostsrepo : "https://adachippp.github.io/nya-hosts");
 	if (c->aurfirst) fprintf(f, "aurfirst = true\n"); else fprintf(f, "#aurfirst = true\n");
+	if (c->declarative) fprintf(f, "declarative = true\n"); else fprintf(f, "#declarative = true\n");
 	if (c->pkgorder.n > 0) {
 		fprintf(f, "PkgOrder =");
 		for (i = 0; i < c->pkgorder.n; i++) fprintf(f, " %s", c->pkgorder.v[i]);
@@ -482,9 +489,5 @@ int config_save_kv(const char *path, const char *key, const char *val) {
 const char *config_default_path(void) {
 	const char *env = getenv("NYA_CONF");
 	if (env && *env) return env;
-	if (geteuid() == 0) return "/etc/nya.conf";
-	static char buf[4096];
-	const char *home = getenv("HOME");
-	snprintf(buf, sizeof buf, "%s/.config/nya/nya.conf", home ? home : ".");
-	return buf;
+	return "/nya/nya.conf";
 }

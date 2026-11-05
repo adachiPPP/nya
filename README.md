@@ -245,3 +245,31 @@ refresh/search/info/install/remove/upgrade/`-U`, dependency resolution,
 scriptlets, `.pacnew`/`.pacsave` behavior, database format compatibility,
 `--read-paconfig`, and first-use config generation against a `file://` mirror
 — no network or root required.
+
+## 6.0 additions
+
+- **Install from URL**  
+  `nya install <url>` and `nya -U <url>` download the package into the cache
+  (with redirects) before installing, like `pacman -U`.
+
+- **Declarative configuration** (like Nix, but simpler syntax)  
+  Config lives under `/nya`: `/nya/config.nya` lists packages:
+  ```nya
+  packages:
+    - hello
+    - kitty
+  ```
+  - `nya apply` installs missing packages and converges the system.
+  - `nya rebuild` also writes declared configuration files as read-only.
+  - Services are managed via `/nya/services/user.nya` and
+    `/nya/services/system.nya` (one unit per line); `nya apply` enables them.
+  - Per-program configs can be placed in `/nya/decconfig/*.nya`, `/nya/decconfig/system/*`,
+    or `/nya/decconfig/user/*` using `target`, `content << ... <<`, and `mode`.
+- **Config location**  
+  Only `/nya/nya.conf` is used now, not `/etc/nya.conf` or `$XDG...nya.conf`.
+- **Makeconf (`nya --makeconf`) / NOT RECOMMENDED**  
+  Seeds `/nya` from the current system. Review `/nya/config.nya` and other files
+  before rebuilding; **this may change the system configuration**.
+- **Flags**  
+  - `--prune` with `nya rebuild` removes unlisted packages.  
+  - `--clean` forces clean AUR snapshot rebuilds instead of reusing cached packages.

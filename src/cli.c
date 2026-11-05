@@ -9,6 +9,7 @@ typedef struct {
 	int asdeps;
 	int noconfirm;
 	int overwrite;
+	int prune;
 	const char *config_path;
 	const char *root_ov;
 	const char *dbpath_ov;
@@ -50,13 +51,15 @@ static void print_help(void) {
 	printf("root elevation: set 'sudobin = sudo' or 'sudobin = doas' in [options] (default: sudo)\n");
 	printf("  nya --save <key> <value>      save a config option (sudobin, aur, searchaur, etc.)\n");
 	printf("  nya --read-paconfig [file]    import repositories from pacman.conf\n");
-	printf("  nya config                    print effective configuration\n");
+	printf("  nya apply                     declarative apply (/nya/config.nya -> install/remove)\n");
+	printf("  nya rebuild                   rebuild system from declarative config (configs read-only)\n");
+	printf("  nya --makeconf                seed /nya config from current system (NOT RECOMMENDED)\n");
 	printf("\npacman-compatible flags:\n");
 	printf("  -S -Ss -Si -Sy -Su -Syu -Sw -Sc -Scc\n");
 	printf("  -Q -Qs -Qi -Ql -Qk -Qo -Qm -Qd -Qe -Qt -Qu\n");
 	printf("  -R -Rs -Rn -Rc -Ru   -U <file.pkg.tar.zst>...\n");
 	printf("\noptions:\n");
-	printf("  --noconfirm    --needed    --asdeps    --overwrite\n");
+	printf("  --noconfirm    --needed    --asdeps    --overwrite    --clean    --prune\n");
 	printf("  --config <path> --root <dir> --dbpath <path> --cachedir <dir>\n");
 	printf("  --color --nocolor --verbose --quiet --help --version\n");
 	printf("  --user                  user-local install mode (~/.local/bin, ONLY for applications NOT things that should be ran as root)\n");
@@ -134,6 +137,22 @@ static int parse_long(cli *cl, const char *arg, int *i, int argc, char **argv) {
 	}
 	if (strcmp(arg, "--refresh") == 0) {
 		cl->y = 1;
+		return 0;
+	}
+	if (strcmp(arg, "--declarative") == 0 || strcmp(arg, "--apply") == 0) {
+		cl->op = 'D';
+		return 0;
+	}
+	if (strcmp(arg, "--makeconf") == 0) {
+		cl->op = 'M';
+		return 0;
+	}
+	if (strcmp(arg, "--prune") == 0) {
+		cl->prune = 1;
+		return 0;
+	}
+	if (strcmp(arg, "--rebuild") == 0) {
+		cl->op = 'B';
 		return 0;
 	}
 	if (strcmp(arg, "--sysupgrade") == 0) {
@@ -394,6 +413,20 @@ static int word_command(cli *cl, const char *w) {
 		cl->op = 'H';
 		return 0;
 	}
+	if (strcmp(w, "apply") == 0 || strcmp(w, "declarative") == 0 ||
+	    strcmp(w, "decl") == 0 || strcmp(w, "converge") == 0 ||
+	    strcmp(w, "reconcile") == 0) {
+		cl->op = 'D';
+		return 0;
+	}
+	if (strcmp(w, "makeconf") == 0) {
+		cl->op = 'M';
+		return 0;
+	}
+	if (strcmp(w, "rebuild") == 0) {
+		cl->op = 'B';
+		return 0;
+	}
 	if (strcmp(w, "config") == 0) {
 		cl->op = 'c';
 		return 0;
@@ -601,8 +634,9 @@ int cli_main(int argc, char **argv) {
 		}
 		if (cl.op == 0 && cl.targets.n == 0) {
 			if (word_command(&cl, arg) == 0) {
-				if (cl.op == 'n' || cl.op == 'a' || cl.op == 'f' || cl.op == 'H') {
-					if (i + 1 < argc && argv[i + 1][0] != '-') {
+				if (cl.op == 'n' || cl.op == 'a' || cl.op == 'f' || cl.op == 'H' || cl.op == 'D') {
+					if (i + 1 < argc && argv[i + 1][0] != '-' &&
+					    (cl.op != 'D' || strcmp(argv[i + 1], "apply") == 0)) {
 						cl.word = argv[++i];
 					}
 				}
@@ -753,6 +787,9 @@ int cli_main(int argc, char **argv) {
 	if (c->logfile && *c->logfile) set_logfile(c->logfile);
 	g_noconfirm = cl.noconfirm;
 	g_overwrite = cl.overwrite;
+	if (cl.cclean > 0 && cl.targets.n > 0) g_clean = 1;
+	g_prune = cl.prune;
+	if (cl.op == 'B') g_rebuild = 1;
 
 	if (g_user_mode) {
 		warn("--user mode: installing to ~/.local (user apps only, NOT root/system tools!)");
@@ -816,6 +853,7 @@ int cli_main(int argc, char **argv) {
 		else if (cl.op == 'S') need_root = cl.y || cl.u || cl.cclean > 0 || (cl.targets.n > 0 && !cl.s && cl.i == 0);
 		else if (cl.op == 'a' && cl.word && strcmp(cl.word, "install") == 0) need_root = 1;
 		else if (cl.op == 'H' && cl.word && strcmp(cl.word, "install") == 0) need_root = 1;
+		else if (cl.op == 'D' || cl.op == 'M' || cl.op == 'B') need_root = 1;
 		else if (cl.op == 'W') need_root = 1;  
 		else if (cl.op == 'X') need_root = 1;  
 		if (need_root) {
@@ -848,7 +886,7 @@ int cli_main(int argc, char **argv) {
 			needs_dbs = 1;
 			load_mode = 0;  
 		}
-	} else if (cl.op == 'a' || cl.op == 'H') {
+	} else if (cl.op == 'a' || cl.op == 'H' || cl.op == 'D' || cl.op == 'M' || cl.op == 'B') {
 		needs_dbs = 1;
 		load_mode = 0;  
 	}
@@ -900,7 +938,7 @@ int cli_main(int argc, char **argv) {
 		break;
 	}
 	case 'S': {
-		if (cl.cclean > 0) {
+		if (cl.cclean > 0 && cl.targets.n == 0) {
 			rc = do_clean(c, cl.cclean > 1);
 			break;
 		}
@@ -969,6 +1007,16 @@ int cli_main(int argc, char **argv) {
 			}
 			if (rc == 0) host_update(c, NULL, 0);
 			if (rc == 0) fp_update(c);
+			if (rc == 0 && c->declarative) {
+				char dcfg[4096];
+				if (c->rootdir && strcmp(c->rootdir, "/") == 0) snprintf(dcfg, sizeof dcfg, "%s", "/nya/config.nya");
+				else snprintf(dcfg, sizeof dcfg, "%s/nya/config.nya", c->rootdir ? c->rootdir : "/");
+				if (is_file(dcfg)) {
+					msg("applying declarative configuration...");
+					int drc = do_declarative(c);
+					if (drc != 0) rc = drc;
+				}
+			}
 			break;
 		}
 		if (cl.targets.n == 0) {
@@ -1096,6 +1144,18 @@ int cli_main(int argc, char **argv) {
 			break;
 		}
 		rc = txn_run(c, &t, 0);
+		break;
+	}
+	case 'D': {
+		rc = do_declarative(c);
+		break;
+	}
+	case 'M': {
+		rc = do_makeconf(c);
+		break;
+	}
+	case 'B': {
+		rc = do_declarative(c);
 		break;
 	}
 	case 'n': {

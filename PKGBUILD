@@ -1,5 +1,5 @@
 pkgname=nya
-pkgver=5.1.4
+pkgver=6.0.0
 pkgrel=1
 pkgdesc="A pacman-compatible feature packed lightweight package manager written in C, with AUR, nix searching and flatpak support"
 arch=('x86_64' 'aarch64')

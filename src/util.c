@@ -713,6 +713,9 @@ int run_capture_quiet(char *const argv[], char **out) {
 
 int g_noconfirm = 0;
 int g_overwrite = 0;
+int g_clean = 0;
+int g_rebuild = 0;
+int g_prune = 0;
 int g_color = 0;
 int g_verbose = 0;
 int g_user_mode = 0;

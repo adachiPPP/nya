@@ -301,6 +301,16 @@ int txn_build_install(config *c, const char **targets, int ntargets, txn *t, str
 		} else {
 			p = db_find_sync_exact(repofilter, dep.name);
 			if (!p) {
+				int bi;
+				for (bi = 0; bi < g_nsync; bi++) {
+					if (g_sync[bi]->base && strcmp(g_sync[bi]->base, dep.name) == 0 &&
+					    (!repofilter || (g_sync[bi]->repo && strcmp(g_sync[bi]->repo, repofilter) == 0))) {
+						p = g_sync[bi];
+						break;
+					}
+				}
+			}
+			if (!p) {
 				strs members;
 				memset(&members, 0, sizeof members);
 				if (group_members(c, dep.name, &members) > 0) {

@@ -453,3 +453,632 @@ int do_clean(config *c, int all) {
 	msg("removed %d cached package(s)", removed);
 	return 0;
 }
+
+static char *str_tolower_dup(const char *s) {
+	char *out = xstrdup(s ? s : "");
+	str_lower(out);
+	return out;
+}
+
+static const char *decl_config_path(config *c) {
+	static char buf[4096];
+	if (c && c->rootdir && strcmp(c->rootdir, "/") == 0) return "/nya/config.nya";
+	snprintf(buf, sizeof buf, "%s/nya/config.nya", c ? c->rootdir : "/");
+	return buf;
+}
+
+static const char *decl_world_dir(config *c) {
+	static char buf[4096];
+	if (c && c->rootdir && strcmp(c->rootdir, "/") == 0) return "/nya/world";
+	snprintf(buf, sizeof buf, "%s/nya/world", c ? c->rootdir : "/");
+	return buf;
+}
+
+static int decl_is_pkg_key(const char *key) {
+	char *l = str_tolower_dup(key);
+	int ok = (strcmp(l, "packages") == 0 || strcmp(l, "pkgs") == 0 ||
+	          strcmp(l, "systempackages") == 0 || strcmp(l, "world") == 0 ||
+	          strcmp(l, "installed") == 0 || strcmp(l, "units") == 0);
+	free(l);
+	return ok;
+}
+
+static int decl_is_keyword(const char *tok) {
+	char *l = str_tolower_dup(tok);
+	int ok = (strcmp(l, "packages") == 0 || strcmp(l, "pkgs") == 0 ||
+	          strcmp(l, "systempackages") == 0 || strcmp(l, "options") == 0 ||
+	          strcmp(l, "true") == 0 || strcmp(l, "false") == 0 ||
+	          strcmp(l, "yes") == 0 || strcmp(l, "no") == 0 ||
+	          strcmp(l, "on") == 0 || strcmp(l, "off") == 0);
+	free(l);
+	return ok;
+}
+
+static void decl_parse_tokens(const char *text, strs *desired) {
+	const char *p = text;
+	while (*p) {
+		while (*p && (isspace((unsigned char)*p) || *p == ',' || *p == '[' ||
+		              *p == ']' || *p == ';' || *p == '{' || *p == '}'))
+			p++;
+		if (!*p) break;
+		const char *start = p;
+		while (*p && !isspace((unsigned char)*p) && *p != ',' && *p != '[' &&
+		       *p != ']' && *p != ';' && *p != '{' && *p != '}')
+			p++;
+		char tok[512];
+		size_t l = (size_t)(p - start);
+		if (l >= sizeof tok) l = sizeof tok - 1;
+		memcpy(tok, start, l);
+		tok[l] = '\0';
+		char *s = trim(tok);
+		/* strip leading list markers */
+		while (*s == '-' || *s == '*' || *s == '+') {
+			s++;
+			while (*s == ' ') s++;
+		}
+		if (*s == '\0') continue;
+		/* strip version comparators */
+		char *comp = strpbrk(s, "=<>");
+		if (comp && comp > s) *comp = '\0';
+		char *t = trim(s);
+		if (!*t || decl_is_keyword(t)) continue;
+		if (!strs_has(desired, t)) strs_add(desired, t);
+	}
+}
+
+static int parse_decl_config(config *c, strs *desired) {
+	const char *path = decl_config_path(c);
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		error("could not open declarative config %s", path);
+		return -1;
+	}
+	char line[8192];
+	int in_pkgs = 0;
+	while (fgets(line, sizeof line, f)) {
+		char *hash = strchr(line, '#');
+		/* keep # inside urls */
+		if (hash && (hash == line || (hash > line && isspace((unsigned char)hash[-1])))) *hash = '\0';
+		char *s = trim(line);
+		if (*s == '\0') continue;
+		if (*s == '[') {
+			char *end = strchr(s, ']');
+			if (end) {
+				char section[256];
+				size_t len = (size_t)(end - s - 1);
+				if (len >= sizeof section) len = sizeof section - 1;
+				memcpy(section, s + 1, len);
+				section[len] = '\0';
+				str_lower(section);
+				in_pkgs = (strcmp(section, "packages") == 0 || strcmp(section, "pkgs") == 0 ||
+				           strcmp(section, "systempackages") == 0 || strcmp(section, "installed") == 0 ||
+				           strcmp(section, "world") == 0);
+			}
+			continue;
+		}
+		char *eq = strchr(s, '=');
+		char *colon = strchr(s, ':');
+		char *sep = NULL;
+		if (eq && (!colon || eq < colon)) sep = eq;
+		else if (colon) sep = colon;
+		if (sep) {
+			*sep = '\0';
+			char *key = trim(s);
+			char *val = trim(sep + 1);
+			if (decl_is_pkg_key(key)) {
+				in_pkgs = 1;
+				if (*val) decl_parse_tokens(val, desired);
+			} else {
+				in_pkgs = 0;
+			}
+			continue;
+		}
+		if (in_pkgs) {
+			if (s[0] == '-' || s[0] == '*' || s[0] == '+') decl_parse_tokens(s + 1, desired);
+			else decl_parse_tokens(s, desired);
+		} else {
+			/* flat list of package names */
+			decl_parse_tokens(s, desired);
+		}
+	}
+	fclose(f);
+	return 0;
+}
+
+static void systemctl_cmd(config *c, const char *svc, int user, int enable) {
+	char bin[48];
+	snprintf(bin, sizeof bin, "systemctl");
+	char *argv[8];
+	int ai = 0;
+	argv[ai++] = bin;
+	if (user) argv[ai++] = (char *)"--user";
+	argv[ai++] = enable ? (char *)"enable" : (char *)"disable";
+	argv[ai++] = (char *)"--now";
+	argv[ai++] = (char *)svc;
+	argv[ai] = NULL;
+	(void)c;
+	char *out = NULL;
+	run_capture_quiet(argv, &out);
+	if (out) free(out);
+}
+
+static void apply_service_list(config *c, const char *path, int user) {
+	FILE *f = fopen(path, "r");
+	if (!f) return;
+	char line[8192];
+	while (fgets(line, sizeof line, f)) {
+		char *hash = strchr(line, '#');
+		if (hash) *hash = '\0';
+		char *s = trim(line);
+		if (!*s) continue;
+		char *tok = strtok(s, " \t,;");
+		while (tok) {
+			if (strstr(tok, "\\n")) {
+				char buf[8192];
+				snprintf(buf, sizeof buf, "%s", tok);
+				char *p = buf;
+				while ((p = strstr(p, "\\n")) != NULL) { p[0] = ' '; p[1] = ' '; p += 2; }
+				char *t2 = strtok(buf, " \t,;");
+				while (t2) {
+					if (strstr(t2, ".service")) systemctl_cmd(c, t2, user, 1);
+					t2 = strtok(NULL, " \t,;");
+				}
+			} else if (strstr(tok, ".service")) {
+				systemctl_cmd(c, tok, user, 1);
+			}
+			tok = strtok(NULL, " \t,;");
+		}
+	}
+	fclose(f);
+}
+
+static void process_decconfig_file(config *c, const char *path) {
+	FILE *f = fopen(path, "r");
+	if (!f) return;
+	char line[8192];
+	char target[4096] = "";
+	char mode[64] = "";
+	/* content accumulator */
+	char *content = NULL;
+	size_t clen = 0, ccap = 0;
+	int collecting = 0;
+	char delim[128] = "<<";
+	/* We support:
+	   target <path>
+	   mode <octal>
+	   content <<
+	   ...
+	   <<
+	*/
+	while (fgets(line, sizeof line, f)) {
+		char *s = trim(line);
+		if (!collecting) {
+			if (*s == '\0' || *s == '#') continue;
+			if (strncmp(s, "target", 6) == 0) {
+				char *p = s + 6;
+				while (*p == ' ' || *p == '=') p++;
+				snprintf(target, sizeof target, "%s", trim(p));
+				continue;
+			}
+			if (strncmp(s, "mode", 4) == 0) {
+				char *p = s + 4;
+				while (*p == ' ' || *p == '=') p++;
+				snprintf(mode, sizeof mode, "%s", trim(p));
+				continue;
+			}
+			if (strncmp(s, "content", 7) == 0) {
+				char *p = s + 7;
+				while (*p == ' ' || *p == '=') p++;
+				if (strncmp(p, "<<", 2) == 0) {
+					collecting = 1;
+					clen = 0;
+					if (content) { free(content); content = NULL; }
+					continue;
+				}
+			}
+			continue;
+		} else {
+			if (strcmp(s, "<<") == 0 || strcmp(s, "<<EOF") == 0) {
+				collecting = 0;
+				/* write accumulated content to target */
+				if (target[0]) {
+					char rooted[4096];
+					if (target[0] == '~') {
+						const char *home = getenv("HOME");
+						if (!home || !*home) home = "/";
+						if (target[1] == '/')
+							snprintf(rooted, sizeof rooted, "%s%s", home, target + 1);
+						else
+							snprintf(rooted, sizeof rooted, "%s/%s", home, target + 1);
+					} else if (c && c->rootdir && strcmp(c->rootdir, "/") != 0) {
+						snprintf(rooted, sizeof rooted, "%s/%s", c->rootdir, target[0] == '/' ? target + 1 : target);
+					} else {
+						snprintf(rooted, sizeof rooted, "%s", target);
+					}
+					char parent[4096];
+					snprintf(parent, sizeof parent, "%s", rooted);
+					char *slash = strrchr(parent, '/');
+					if (slash) { *slash = '\0'; mkdir_p(parent, 0755); }
+					FILE *out = fopen(rooted, "w");
+					if (out) {
+						if (content) fwrite(content, 1, clen, out);
+						fclose(out);
+						if (mode[0]) {
+							mode_t m = (mode_t)strtol(mode, NULL, 8);
+							chmod(rooted, m);
+						} else {
+							chmod(rooted, 0444);
+						}
+						msg("wrote %s", rooted);
+					} else {
+						error("could not write %s", rooted);
+					}
+				}
+				continue;
+			}
+			/* accumulate line */
+			size_t ll = strlen(line);
+			if (clen + ll + 2 > ccap) {
+				ccap = ccap ? ccap * 2 : 4096;
+				while (clen + ll + 2 > ccap) ccap *= 2;
+				content = xrealloc(content, ccap);
+			}
+			memcpy(content + clen, line, ll);
+			clen += ll;
+			content[clen++] = '\n';
+			content[clen] = '\0';
+		}
+	}
+	fclose(f);
+	if (content) free(content);
+}
+
+static void ensure_service_list(config *c, const char *path, int user) {
+	if (is_file(path)) return;
+	char *out = NULL;
+	char *argv[9];
+	int ai = 0;
+	argv[ai++] = (char *)"systemctl";
+	if (user) argv[ai++] = (char *)"--user";
+	argv[ai++] = (char *)"list-unit-files";
+	argv[ai++] = (char *)"--type=service";
+	argv[ai++] = (char *)"--state=enabled";
+	argv[ai++] = (char *)"--no-pager";
+	argv[ai++] = (char *)"--no-legend";
+	argv[ai] = NULL;
+	if (run_capture_quiet(argv, &out) != 0 || !out) return;
+	FILE *f = fopen(path, "w");
+	if (!f) { free(out); return; }
+	char *p = out;
+	while (*p) {
+		char *nl = strchr(p, '\n');
+		size_t l = nl ? (size_t)(nl - p) : strlen(p);
+		char line[1024];
+		if (l >= sizeof line) l = sizeof line - 1;
+		memcpy(line, p, l);
+		line[l] = '\0';
+		char *tok = strtok(line, " \t");
+		if (tok && strstr(tok, ".service")) fprintf(f, "%s\n", tok);
+		if (!nl) break;
+		p = nl + 1;
+	}
+	fclose(f);
+	free(out);
+}
+
+static void apply_decconfig_services(config *c) {
+	char svcd[4096];
+	if (c && c->rootdir && strcmp(c->rootdir, "/") != 0) snprintf(svcd, sizeof svcd, "%s/nya/services", c->rootdir);
+	else snprintf(svcd, sizeof svcd, "/nya/services");
+	mkdir_p(svcd, 0755);
+	char path[4096];
+	snprintf(path, sizeof path, "%s/system.nya", svcd);
+	ensure_service_list(c, path, 0);
+	snprintf(path, sizeof path, "%s/user.nya", svcd);
+	ensure_service_list(c, path, 1);
+	char decdir[4096];
+	if (c && c->rootdir && strcmp(c->rootdir, "/") != 0) snprintf(decdir, sizeof decdir, "%s/nya/decconfig", c->rootdir);
+	else snprintf(decdir, sizeof decdir, "/nya/decconfig");
+	mkdir_p(decdir, 0755);
+	DIR *d = opendir(decdir);
+	if (d) {
+		struct dirent *de;
+		while ((de = readdir(d)) != NULL) {
+			size_t dl = strlen(de->d_name);
+			if (dl < 5 || strcmp(de->d_name + dl - 4, ".nya") != 0) continue;
+			char p[4096];
+			snprintf(p, sizeof p, "%s/%s", decdir, de->d_name);
+			process_decconfig_file(c, p);
+		}
+		closedir(d);
+	}
+	char subs[2][4096];
+	snprintf(subs[0], sizeof subs[0], "%s/system", decdir);
+	snprintf(subs[1], sizeof subs[1], "%s/user", decdir);
+	int si;
+	for (si = 0; si < 2; si++) {
+		mkdir_p(subs[si], 0755);
+		DIR *sd = opendir(subs[si]);
+		if (!sd) continue;
+		struct dirent *de;
+		while ((de = readdir(sd)) != NULL) {
+			size_t dl = strlen(de->d_name);
+			if (dl < 5 || strcmp(de->d_name + dl - 4, ".nya") != 0) continue;
+			char p[4096];
+			snprintf(p, sizeof p, "%s/%s", subs[si], de->d_name);
+			process_decconfig_file(c, p);
+		}
+		closedir(sd);
+	}
+
+	char svcdir[4096];
+	if (c && c->rootdir && strcmp(c->rootdir, "/") != 0) snprintf(svcdir, sizeof svcdir, "%s/nya/services", c->rootdir);
+	else snprintf(svcdir, sizeof svcdir, "/nya/services");
+	mkdir_p(svcdir, 0755);
+	char p[4096];
+	snprintf(p, sizeof p, "%s/user.nya", svcdir);
+	apply_service_list(c, p, 1);
+	snprintf(p, sizeof p, "%s/system.nya", svcdir);
+	apply_service_list(c, p, 0);
+
+	/* well known daemons */
+	const char *known[][2] = {
+		{"tailscale", "tailscaled"},
+		{"docker", "docker"},
+		{"openssh", "sshd"},
+		{"nginx", "nginx"},
+		{"httpd", "httpd"},
+		{"mariadb", "mariadb"},
+		{"postgresql", "postgresql"},
+		{NULL, NULL}
+	};
+	int i;
+	for (i = 0; known[i][0]; i++) {
+		char binpath[4096];
+		if (c && c->rootdir && strcmp(c->rootdir, "/") != 0)
+			snprintf(binpath, sizeof binpath, "%s/usr/bin/%s", c->rootdir, known[i][0]);
+		else
+			snprintf(binpath, sizeof binpath, "/usr/bin/%s", known[i][0]);
+		if (is_file(binpath) || is_file(known[i][0])) {
+			systemctl_cmd(c, known[i][1], 0, 1);
+		}
+	}
+}
+
+int do_declarative(config *c) {
+	const char *cfgpath = decl_config_path(c);
+	if (!is_file(cfgpath)) {
+		const char *wd = decl_world_dir(c);
+		char wpath[4096];
+		snprintf(wpath, sizeof wpath, "%s/packages", wd);
+		if (!is_file(wpath)) {
+			error("declarative config %s not found (create it, or run 'nya --readpkg' first)", cfgpath);
+			return 1;
+		}
+		mkdir_p(c->rootdir, 0755);
+		char parent[4096];
+		snprintf(parent, sizeof parent, "%s", cfgpath);
+		char *slash = strrchr(parent, '/');
+		if (slash) { *slash = '\0'; mkdir_p(parent, 0755); }
+		FILE *src = fopen(wpath, "r");
+		FILE *dst = fopen(cfgpath, "w");
+		if (!src || !dst) {
+			if (src) fclose(src);
+			if (dst) fclose(dst);
+			error("could not create %s", cfgpath);
+			return 1;
+		}
+		char buf[8192];
+		size_t n;
+		while ((n = fread(buf, 1, sizeof buf, src)) > 0) fwrite(buf, 1, n, dst);
+		fclose(src);
+		fclose(dst);
+		msg("generated %s from world packages", cfgpath);
+	}
+	strs desired;
+	memset(&desired, 0, sizeof desired);
+	if (parse_decl_config(c, &desired) != 0) {
+		strs_free(&desired);
+		return 1;
+	}
+	if (desired.n == 0) {
+		msg("no packages declared; running --makeconf to seed config.nya from this system");
+		do_makeconf(c);
+		strs_free(&desired);
+		memset(&desired, 0, sizeof desired);
+		parse_decl_config(c, &desired);
+	}
+	if (desired.n == 0) {
+		warn("no packages declared in %s; skipping install/removal", cfgpath);
+		strs_free(&desired);
+		return 0;
+	}
+
+	const char *wd = decl_world_dir(c);
+	mkdir_p(wd, 0755);
+	char wpath[4096];
+	snprintf(wpath, sizeof wpath, "%s/packages", wd);
+	FILE *wf = fopen(wpath, "w");
+	if (wf) {
+		int i;
+		for (i = 0; i < desired.n; i++) fprintf(wf, "%s\n", desired.v[i]);
+		fclose(wf);
+	}
+	/* keep existing dependency info; do not truncate /nya/world/depends */
+
+	/* install missing desired packages */
+	strs missing;
+	memset(&missing, 0, sizeof missing);
+	int i;
+	for (i = 0; i < desired.n; i++) {
+		pkg *l = db_find_local(desired.v[i]);
+		if (!l) {
+			int found = 0;
+			int j;
+			for (j = 0; j < g_nlocal; j++) {
+				if (g_local[j]->base && strcmp(g_local[j]->base, desired.v[i]) == 0) {
+					found = 1;
+					break;
+				}
+			}
+			if (!found) strs_add(&missing, desired.v[i]);
+		}
+	}
+	int rc = 0;
+	strs saved_order = c->pkgorder;
+	memset(&c->pkgorder, 0, sizeof c->pkgorder);
+	strs_add(&c->pkgorder, "repos");
+	if (missing.n > 0) {
+		txn t;
+		txn_init(&t, c);
+		if (txn_build_install(c, (const char **)missing.v, missing.n, &t, NULL) != 0) {
+			txn_free(&t);
+			strs_free(&missing);
+			strs_free(&desired);
+			strs_free(&c->pkgorder);
+			c->pkgorder = saved_order;
+			return 1;
+		}
+		if (t.nadd > 0) {
+			rc = txn_run(c, &t, 0);
+		}
+		txn_free(&t);
+	}
+	strs_free(&c->pkgorder);
+	c->pkgorder = saved_order;
+	strs_free(&missing);
+
+	if (rc == 0 && g_prune) {
+		int rc2 = do_remove_unneeded(c);
+		if (rc2 != 0) rc = rc2;
+	} else if (rc == 0) {
+		msg("skipping removal of unlisted packages (use 'nya rebuild --prune' to prune)");
+	}
+
+	strs_free(&desired);
+	apply_decconfig_services(c);
+	msg("declarative apply complete mreow~");
+	return rc;
+}
+
+int do_makeconf(config *c) {
+	char nyadir[4096];
+	if (c && c->rootdir && strcmp(c->rootdir, "/") != 0) snprintf(nyadir, sizeof nyadir, "%s/nya", c->rootdir);
+	else snprintf(nyadir, sizeof nyadir, "/nya");
+	mkdir_p(nyadir, 0755);
+	mkdir_p(decl_world_dir(c), 0755);
+	if (do_read_pkg(c) != 0) {
+		warn("could not read installed packages; continuing");
+	}
+
+	/* convert installed (non-core) packages to config.nya */
+	char cfgpath[4096];
+	snprintf(cfgpath, sizeof cfgpath, "%s/config.nya", nyadir);
+	strs seen;
+	memset(&seen, 0, sizeof seen);
+	FILE *dst = fopen(cfgpath, "w");
+	if (dst) {
+		fprintf(dst, "# Declarative package list (generated by nya --makeconf)\n");
+		fprintf(dst, "# Core/system packages are intentionally omitted\n");
+		fprintf(dst, "packages:\n");
+		int i;
+		for (i = 0; i < g_nlocal; i++) {
+			pkg *p = g_local[i];
+			if (!p || !p->name) continue;
+			if (p->repo) {
+				if (str_ieq(p->repo, "core") || str_ieq(p->repo, "core-testing") ||
+				    str_ieq(p->repo, "core-debug") || str_ieq(p->repo, "core-staging"))
+					continue;
+			}
+					/* include every installed package outside the core repos so --makeconf never trims a live system */
+			const char *nm = (p->base && *p->base) ? p->base : p->name;
+			if (strs_has(&seen, nm)) continue;
+			strs_add(&seen, nm);
+			fprintf(dst, "  - %s\n", nm);
+		}
+		fclose(dst);
+		msg("wrote %s", cfgpath);
+	}
+	strs_free(&seen);
+
+	/* service lists */
+	char svcdir[4096];
+	snprintf(svcdir, sizeof svcdir, "%s/services", nyadir);
+	mkdir_p(svcdir, 0755);
+	char spath[4096];
+	char *out = NULL;
+	char *argv_sys[] = { "systemctl", "list-unit-files", "--type=service", "--state=enabled", "--no-pager", "--no-legend", NULL };
+	if (run_capture_quiet(argv_sys, &out) == 0 && out) {
+		snprintf(spath, sizeof spath, "%s/system.nya", svcdir);
+		FILE *f = fopen(spath, "w");
+		if (f) {
+			char *p = out;
+			while (*p) {
+				char *nl = strchr(p, '\n');
+				size_t l = nl ? (size_t)(nl - p) : strlen(p);
+				char line[1024];
+				if (l >= sizeof line) l = sizeof line - 1;
+				memcpy(line, p, l);
+				line[l] = '\0';
+				char *tok = strtok(line, " \\t");
+				if (tok && strstr(tok, ".service")) {
+					fprintf(f, "%s\n", tok);
+				}
+				if (!nl) break;
+				p = nl + 1;
+			}
+			fclose(f);
+			msg("wrote %s", spath);
+		}
+		free(out);
+		out = NULL;
+	}
+	char *argv_user[] = { "systemctl", "--user", "list-unit-files", "--type=service", "--state=enabled", "--no-pager", "--no-legend", NULL };
+	if (run_capture_quiet(argv_user, &out) == 0 && out) {
+		snprintf(spath, sizeof spath, "%s/user.nya", svcdir);
+		FILE *f = fopen(spath, "w");
+		if (f) {
+			char *p = out;
+			while (*p) {
+				char *nl = strchr(p, '\n');
+				size_t l = nl ? (size_t)(nl - p) : strlen(p);
+				char line[1024];
+				if (l >= sizeof line) l = sizeof line - 1;
+				memcpy(line, p, l);
+				line[l] = '\0';
+				char *tok = strtok(line, " \\t");
+				if (tok && strstr(tok, ".service")) {
+					fprintf(f, "%s\n", tok);
+				}
+				if (!nl) break;
+				p = nl + 1;
+			}
+			fclose(f);
+			msg("wrote %s", spath);
+		}
+		free(out);
+		out = NULL;
+	}
+
+	/* example decconfig template */
+	char decdir[4096];
+	snprintf(decdir, sizeof decdir, "%s/decconfig", nyadir);
+	mkdir_p(decdir, 0755);
+	char example[4096];
+	snprintf(example, sizeof example, "%s/example.nya", decdir);
+	if (!is_file(example)) {
+		FILE *e = fopen(example, "w");
+		if (e) {
+			fprintf(e, "# declarative config example\\n");
+			fprintf(e, "target /etc/example.conf\\n");
+			fprintf(e, "content <<\\n");
+			fprintf(e, "example content\\n");
+			fprintf(e, "<<\\n");
+			fprintf(e, "mode 0644\\n");
+			fclose(e);
+		}
+	}
+
+	msg("makeconf complete mreow~: review %s", nyadir);
+	return 0;
+}

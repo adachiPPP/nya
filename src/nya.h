@@ -21,7 +21,7 @@
 #include <sys/file.h>
 #include <strings.h>
 
-#define NYA_VERSION "5.1.4"
+#define NYA_VERSION "6.0.0"
 
 typedef struct {
 	char **v;
@@ -94,6 +94,9 @@ const char *invoking_user_name(void);
 
 extern int g_noconfirm;
 extern int g_overwrite;
+extern int g_clean;
+extern int g_rebuild;
+extern int g_prune;
 extern int g_color;
 extern int g_verbose;
 extern int g_user_mode;
@@ -184,6 +187,7 @@ typedef struct config {
 	int verbosepkglists;
 	int aur;
 	int nix;
+	int declarative;
 	int searchaur;
 	int searchnix;
 	int searchflatpak;
@@ -380,6 +384,8 @@ int do_owns(config *c, const char *path);
 int do_clean(config *c, int all);
 int do_read_pkg(config *c);
 int do_remove_unneeded(config *c);
+int do_declarative(config *c);
+int do_makeconf(config *c);
 void save_world_additions(config *c, txn *t);
 void save_world_removals(config *c, txn *t);
 
