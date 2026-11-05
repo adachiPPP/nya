@@ -236,8 +236,36 @@ int txn_build_install(config *c, const char **targets, int ntargets, txn *t, str
 		const char *target = targets[ti];
 		if (looks_like_file(target)) {
 			char path[4096];
-			if (startswith(target, "file://")) snprintf(path, sizeof path, "%s", target + 7);
-			else snprintf(path, sizeof path, "%s", target);
+			if (startswith(target, "file://")) {
+				snprintf(path, sizeof path, "%s", target + 7);
+			} else if (startswith(target, "http://") || startswith(target, "https://")) {
+				if (c->cachedirs.n == 0) {
+					error("no cache directory configured");
+					return -1;
+				}
+				char cdir[4096];
+				snprintf(cdir, sizeof cdir, "%s", c->cachedirs.v[0]);
+				mkdir_p(cdir, 0755);
+				char basename[512];
+				char urlbuf[4096];
+				snprintf(urlbuf, sizeof urlbuf, "%s", target);
+				char *q = strpbrk(urlbuf, "?#");
+				if (q) *q = '\0';
+				const char *slash = strrchr(urlbuf, '/');
+				const char *base = slash ? slash + 1 : urlbuf;
+				if (!base || !*base) base = "downloaded.pkg.tar.zst";
+				snprintf(basename, sizeof basename, "%s", base);
+				snprintf(path, sizeof path, "%s/%s", cdir, basename);
+				if (!is_file(path)) {
+					msg("downloading %s", target);
+					if (download_url(c, target, path) != 0) {
+						unlink(path);
+						return -1;
+					}
+				}
+			} else {
+				snprintf(path, sizeof path, "%s", target);
+			}
 			pkg *p = pkg_new("local");
 			p->filename = xstrdup(path);
 			if (pkg_scan_archive(c, path, p) != 0) {
