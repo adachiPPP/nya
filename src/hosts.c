@@ -957,7 +957,10 @@ static int host_install_deps(config *c, const char *name, host_recipe *r) {
 					}
 				}
 			}
+			int saved_ov = g_overwrite;
+			g_overwrite = 1;
 			if (t.nadd == 0 || txn_run(c, &t, 0) != 0) rc = -1;
+			g_overwrite = saved_ov;
 		}
 		strs_free(&notfound);
 		txn_free(&t);
@@ -999,10 +1002,14 @@ static int host_install_deps(config *c, const char *name, host_recipe *r) {
 				t.add[k]->reason = 1;
 			}
 		}
+		int saved_ov = g_overwrite;
+		g_overwrite = 1;
 		if (txn_run(c, &t, 0) != 0) {
+			g_overwrite = saved_ov;
 			error("failed to install host dependency '%s' for %s", dep, name);
 			return -1;
 		}
+		g_overwrite = saved_ov;
 	}
 	return 0;
 }
