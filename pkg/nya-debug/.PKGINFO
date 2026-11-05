@@ -6,7 +6,7 @@ xdata = pkgtype=debug
 pkgver = 6.0.1-1
 pkgdesc = Detached debugging symbols for nya
 url = https://github.com/adachiPPP/nya
-builddate = 1793905369
+builddate = 1793907062
 packager = Unknown Packager
 size = 70048
 arch = x86_64

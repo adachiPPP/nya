@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 set -u
 
 ROOT=/tmp/nya-test
@@ -484,7 +484,7 @@ echo "ok: version/help"
 echo "== sync vs update =="
 	mkdir -p "$ROOT/fakebin"
 	cat > "$ROOT/fakebin/flatpak" <<'EOF'
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 echo -e "org.fake.FakeApp\tFake App\tA fake flatpak app\t1.0"
 EOF
 	chmod +x "$ROOT/fakebin/flatpak"
@@ -531,7 +531,7 @@ EOF
 	echo "== install flatpak fallback (lowest priority) =="
 	mkdir -p "$ROOT/fpbin"
 	cat > "$ROOT/fpbin/flatpak" <<EOF
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 echo "flatpak args: \$*" >> /tmp/nya-test/fp-args.log
 exit 0
 EOF
